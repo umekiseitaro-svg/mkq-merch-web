@@ -1,0 +1,656 @@
+(function(){
+  "use strict";
+  var SIG_SEP = "␟";
+
+  // 最新公演（MKQ2026 鹿島・武雄）の品目構成。最初の公演を作るときの初期値としてのみ使う。
+  var DEFAULT_ITEMS = (function(){
+    var rows = [
+      ["Tシャツ","馬　半袖","白","S",3800],
+      ["Tシャツ","馬　半袖","白","M",3800],
+      ["Tシャツ","馬　半袖","白","L",3800],
+      ["Tシャツ","馬　半袖","白","XL",3800],
+      ["Tシャツ","馬　長袖","黒","S",4500],
+      ["Tシャツ","馬　長袖","黒","M",4500],
+      ["Tシャツ","馬　長袖","黒","L",4500],
+      ["Tシャツ","馬　長袖","黒","XL",4500],
+      ["CD","ロマンスカー","","",2000],
+      ["CD","さみしいだけ","","",2000],
+      ["CD","ファックミー","","",2000],
+      ["CD","ワイチャイ","","",2500],
+      ["CD","営業中","","",2700]
+    ];
+    return rows.map(function(r, i){
+      return {id:"i"+(i+1), category:r[0], name:r[1], color:r[2], size:r[3], price:r[4]};
+    });
+  })();
+
+  function uid(prefix){ return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+
+  function cloneItems(items){
+    return items.map(function(it){
+      return { id: uid("i"), category: it.category, name: it.name, color: it.color, size: it.size, price: it.price };
+    });
+  }
+
+
+  var state = { events: [], activeEventId: null };
+
+  function loadStateFromServer(){
+    return fetch("/api/state")
+      .then(function(res){
+        if(res.status === 401){ window.location.href = "/login"; return null; }
+        if(!res.ok) throw new Error("load failed: " + res.status);
+        return res.json();
+      })
+      .then(function(data){
+        if(data && data.state && Array.isArray(data.state.events)){
+          state = data.state;
+        }
+      })
+      .catch(function(){
+        openModal({
+          message: "データの読み込みに失敗しました。通信状況を確認して、ページを再読み込みしてください。",
+          showInput: false,
+          confirmLabel: "再読み込み",
+          danger: false,
+          onConfirm: function(){ window.location.reload(); }
+        });
+      });
+  }
+
+  var saveTimer = null;
+  var SAVE_DEBOUNCE_MS = 800;
+  var saveInFlight = false;
+  var savePending = false;
+
+  function save(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(doSave, SAVE_DEBOUNCE_MS);
+  }
+
+  function doSave(){
+    if(saveInFlight){ savePending = true; return; }
+    saveInFlight = true;
+    fetch("/api/state", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({state: state})
+    }).then(function(res){
+      if(res.status === 401){ window.location.href = "/login"; }
+    }).catch(function(){
+      // 通信エラー: 次の保存タイミングで再試行される
+    }).then(function(){
+      saveInFlight = false;
+      if(savePending){ savePending = false; doSave(); }
+    });
+  }
+
+
+  function formatJPY(n){
+    n = Math.round(n || 0);
+    var sign = n < 0 ? "-" : "";
+    return sign + "¥" + Math.abs(n).toLocaleString("ja-JP");
+  }
+
+  function getEvent(id){
+    for(var i=0;i<state.events.length;i++){ if(state.events[i].id===id) return state.events[i]; }
+    return null;
+  }
+  function getActiveEvent(){ return state.activeEventId ? getEvent(state.activeEventId) : null; }
+
+  function getItemInEvent(ev, itemId){
+    if(!ev) return null;
+    for(var i=0;i<ev.items.length;i++){ if(ev.items[i].id===itemId) return ev.items[i]; }
+    return null;
+  }
+
+  function getStock(ev, itemId){
+    if(!ev) return {before:null, after:null};
+    if(!ev.stock) ev.stock = {};
+    if(!ev.stock[itemId]) ev.stock[itemId] = {before:null, after:null};
+    return ev.stock[itemId];
+  }
+
+  function computeItem(ev, itemId){
+    var item = getItemInEvent(ev, itemId);
+    if(!item) return {sold:0, amount:0};
+    var stock = (ev.stock && ev.stock[itemId]) ? ev.stock[itemId] : {before:null, after:null};
+    var before = stock.before == null ? 0 : Number(stock.before);
+    var after = stock.after == null ? 0 : Number(stock.after);
+    var sold = before - after;
+    return {sold: sold, amount: sold * (Number(item.price) || 0)};
+  }
+
+  function eventTotal(ev){
+    var total = 0, count = 0;
+    if(ev){
+      ev.items.forEach(function(it){
+        var r = computeItem(ev, it.id);
+        total += r.amount; count += r.sold;
+      });
+    }
+    return {total:total, count:count};
+  }
+
+  function itemLabel(item){
+    var parts = [];
+    if(item.name) parts.push(item.name);
+    if(item.color) parts.push(item.color);
+    if(item.size) parts.push(item.size);
+    return parts.join(" / ");
+  }
+
+  function itemSignature(item){
+    return [item.category, item.name, item.color, item.size].join(SIG_SEP);
+  }
+
+  function groupByCategory(items){
+    var order = [], map = {};
+    items.forEach(function(it){
+      var cat = it.category || "その他";
+      if(!map[cat]){ map[cat] = []; order.push(cat); }
+      map[cat].push(it);
+    });
+    return order.map(function(cat){ return {category:cat, items:map[cat]}; });
+  }
+
+  // ---------- tabs ----------
+  var tabButtons = document.querySelectorAll(".tab-btn");
+  var tabPanels = { tally: document.getElementById("tab-tally"), summary: document.getElementById("tab-summary"), events: document.getElementById("tab-events"), items: document.getElementById("tab-items") };
+
+  function showTab(name){
+    tabButtons.forEach(function(b){ b.classList.toggle("active", b.dataset.tab===name); });
+    Object.keys(tabPanels).forEach(function(k){ tabPanels[k].classList.toggle("active", k===name); });
+    if(name==="tally") renderTally();
+    if(name==="summary") renderSummary();
+    if(name==="events") renderEvents();
+    if(name==="items") renderItemsTab();
+  }
+  tabButtons.forEach(function(b){ b.addEventListener("click", function(){ showTab(b.dataset.tab); }); });
+
+  // ---------- header ----------
+  function renderHeader(){
+    var pill = document.getElementById("event-pill");
+    var ev = getActiveEvent();
+    if(!ev){
+      pill.className = "event-pill none";
+      pill.innerHTML = '<span>公演が選択されていません</span><span class="arrow">＋公演を追加 ▸</span>';
+    }else{
+      var t = eventTotal(ev);
+      pill.className = "event-pill";
+      pill.innerHTML = '<span>' + escapeHTML(ev.label) + (ev.date ? "（" + ev.date + "）" : "") + '</span><span class="arrow">' + formatJPY(t.total) + ' ▸</span>';
+    }
+  }
+  document.getElementById("event-pill").addEventListener("click", function(){ showTab("events"); });
+
+  function escapeHTML(s){
+    return String(s==null?"":s).replace(/[&<>"']/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+
+  // ---------- modal (replaces native confirm()/prompt(), which some embedded browsers block or ignore) ----------
+  var modalOnConfirm = null;
+  var modalOverlay = document.getElementById("modal-overlay");
+  var modalMessage = document.getElementById("modal-message");
+  var modalInput = document.getElementById("modal-input");
+  var modalConfirmBtn = document.getElementById("modal-confirm");
+  var modalCancelBtn = document.getElementById("modal-cancel");
+
+  function openModal(opts){
+    modalMessage.textContent = opts.message;
+    if(opts.showInput){
+      modalInput.style.display = "block";
+      modalInput.value = opts.inputValue || "";
+    }else{
+      modalInput.style.display = "none";
+    }
+    modalConfirmBtn.textContent = opts.confirmLabel || "OK";
+    modalConfirmBtn.className = "btn " + (opts.danger ? "danger" : "primary");
+    modalOnConfirm = opts.onConfirm || null;
+    modalOverlay.style.display = "flex";
+    if(opts.showInput){
+      setTimeout(function(){ modalInput.focus(); modalInput.select(); }, 0);
+    }
+  }
+
+  function closeModal(){
+    modalOverlay.style.display = "none";
+    modalOnConfirm = null;
+  }
+
+  function showConfirm(message, onConfirm, opts){
+    openModal({
+      message: message,
+      showInput: false,
+      confirmLabel: (opts && opts.confirmLabel) || "削除",
+      danger: !opts || opts.danger !== false,
+      onConfirm: function(){ onConfirm(); }
+    });
+  }
+
+  function showPrompt(message, defaultValue, onSubmit){
+    openModal({
+      message: message,
+      showInput: true,
+      inputValue: defaultValue,
+      confirmLabel: "保存",
+      danger: false,
+      onConfirm: function(){ onSubmit(modalInput.value); }
+    });
+  }
+
+  modalCancelBtn.addEventListener("click", closeModal);
+  modalOverlay.addEventListener("click", function(e){
+    if(e.target === modalOverlay) closeModal();
+  });
+  modalConfirmBtn.addEventListener("click", function(){
+    var cb = modalOnConfirm;
+    closeModal();
+    if(cb) cb();
+  });
+  modalInput.addEventListener("keydown", function(e){
+    if(e.key === "Enter"){ e.preventDefault(); modalConfirmBtn.click(); }
+  });
+
+  // ---------- tally tab ----------
+  function renderTally(){
+    var ev = getActiveEvent();
+    var container = document.getElementById("tally-groups");
+    var empty = document.getElementById("tally-empty");
+    if(!ev){
+      container.innerHTML = "";
+      empty.style.display = "block";
+      document.getElementById("tally-total").textContent = formatJPY(0);
+      document.getElementById("tally-count").textContent = "0点";
+      return;
+    }
+    empty.style.display = "none";
+    var groups = groupByCategory(ev.items);
+    container.innerHTML = groups.map(function(g){
+      var rows = g.items.map(function(it){
+        var stock = getStock(ev, it.id);
+        var r = computeItem(ev, it.id);
+        var sub = itemLabel(it);
+        return '' +
+          '<div class="item-card">' +
+            '<div class="item-info">' +
+              '<span class="item-name">' + escapeHTML(sub || it.category) + '</span>' +
+              '<span class="item-price">' + formatJPY(it.price) + '</span>' +
+            '</div>' +
+            '<div class="item-inputs">' +
+              '<div class="field"><label>前</label><input type="number" inputmode="numeric" min="0" data-role="before" data-item="' + it.id + '" value="' + (stock.before==null?"":stock.before) + '"></div>' +
+              '<div class="field"><label>後</label><input type="number" inputmode="numeric" min="0" data-role="after" data-item="' + it.id + '" value="' + (stock.after==null?"":stock.after) + '"></div>' +
+              '<div class="item-result' + (r.sold<0?' negative':'') + '" data-result="' + it.id + '">' +
+                '<div class="sold" data-sold="' + it.id + '">' + r.sold + '点</div>' +
+                '<div class="amount" data-amount="' + it.id + '">' + formatJPY(r.amount) + '</div>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+      }).join("");
+      var catTotal = g.items.reduce(function(sum, it){ return sum + computeItem(ev, it.id).amount; }, 0);
+      return '' +
+        '<details class="category" open>' +
+          '<summary><span>' + escapeHTML(g.category) + '</span><span class="cat-total" data-cat-total="' + escapeHTML(g.category) + '">' + formatJPY(catTotal) + '</span></summary>' +
+          rows +
+        '</details>';
+    }).join("");
+    updateTotals();
+  }
+
+  document.getElementById("tally-groups").addEventListener("input", function(e){
+    var t = e.target;
+    if(!t.matches("input[data-item]")) return;
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var itemId = t.dataset.item;
+    var role = t.dataset.role;
+    var stock = getStock(ev, itemId);
+    var val = t.value === "" ? null : Number(t.value);
+    stock[role] = val;
+    save();
+    updateComputedForItem(itemId);
+  });
+
+  function updateComputedForItem(itemId){
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var r = computeItem(ev, itemId);
+    var soldEl = document.querySelector('[data-sold="' + itemId + '"]');
+    var amtEl = document.querySelector('[data-amount="' + itemId + '"]');
+    var resultEl = document.querySelector('[data-result="' + itemId + '"]');
+    if(soldEl) soldEl.textContent = r.sold + "点";
+    if(amtEl) amtEl.textContent = formatJPY(r.amount);
+    if(resultEl) resultEl.classList.toggle("negative", r.sold < 0);
+    updateTotals();
+  }
+
+  function updateTotals(){
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var t = eventTotal(ev);
+    document.getElementById("tally-total").textContent = formatJPY(t.total);
+    document.getElementById("tally-count").textContent = t.count + "点";
+    var catTotals = {};
+    ev.items.forEach(function(it){
+      var cat = it.category || "その他";
+      catTotals[cat] = (catTotals[cat]||0) + computeItem(ev, it.id).amount;
+    });
+    Object.keys(catTotals).forEach(function(cat){
+      var el = document.querySelector('[data-cat-total="' + cssEscape(cat) + '"]');
+      if(el) el.textContent = formatJPY(catTotals[cat]);
+    });
+    renderHeader();
+  }
+
+  function cssEscape(s){
+    return String(s).replace(/["\\]/g, "\\$&");
+  }
+
+  // ---------- summary tab (aggregate across events by item signature, since each event has its own item list) ----------
+  function buildSummary(){
+    var order = [], map = {};
+    state.events.forEach(function(ev){
+      ev.items.forEach(function(it){
+        var sig = itemSignature(it);
+        var r = computeItem(ev, it.id);
+        if(!map[sig]){
+          map[sig] = { category: it.category, name: it.name, color: it.color, size: it.size, price: it.price, count: 0, amount: 0 };
+          order.push(sig);
+        }
+        map[sig].price = it.price;
+        map[sig].count += r.sold;
+        map[sig].amount += r.amount;
+      });
+    });
+    return order.map(function(sig){ return map[sig]; });
+  }
+
+  function renderSummary(){
+    var tbody = document.getElementById("summary-tbody");
+    var rows = buildSummary();
+    var grandCount = 0, grandAmount = 0;
+    if(rows.length === 0){
+      tbody.innerHTML = '<tr><td colspan="4" class="note">まだデータがありません。</td></tr>';
+    }else{
+      tbody.innerHTML = rows.map(function(r){
+        grandCount += r.count; grandAmount += r.amount;
+        return '<tr><td>' + escapeHTML((r.category?r.category+" ":"") + itemLabel(r)) + '</td>' +
+          '<td class="num">' + formatJPY(r.price) + '</td>' +
+          '<td class="num">' + r.count + '</td>' +
+          '<td class="num">' + formatJPY(r.amount) + '</td></tr>';
+      }).join("");
+    }
+    document.getElementById("summary-grand-count").textContent = grandCount;
+    document.getElementById("summary-grand-amount").textContent = formatJPY(grandAmount);
+
+    var list = document.getElementById("event-summary-list");
+    if(state.events.length === 0){
+      list.innerHTML = '<p class="note">まだ公演がありません。</p>';
+    }else{
+      list.innerHTML = state.events.map(function(ev){
+        var t = eventTotal(ev);
+        return '<div class="event-card"><div class="info"><div class="name">' + escapeHTML(ev.label) + '</div>' +
+          '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div></div></div>';
+      }).join("");
+    }
+  }
+
+  document.getElementById("export-summary-csv").addEventListener("click", function(){
+    var rows = buildSummary();
+    var lines = ["カテゴリ,デザイン,カラー,サイズ,単価,合計販売数,合計売上"];
+    var grandCount = 0, grandAmount = 0;
+    rows.forEach(function(r){
+      grandCount += r.count; grandAmount += r.amount;
+      lines.push([r.category, r.name, r.color, r.size, r.price, r.count, r.amount].map(csvField).join(","));
+    });
+    lines.push(["合計","","","","",grandCount,grandAmount].map(csvField).join(","));
+    downloadCSV(lines.join("\n"), "MKQ物販_全体集計.csv");
+  });
+
+  document.getElementById("export-events-csv").addEventListener("click", function(){
+    var lines = ["公演名,日付,販売点数,売上"];
+    var grandCount = 0, grandAmount = 0;
+    state.events.forEach(function(ev){
+      var t = eventTotal(ev);
+      grandCount += t.count; grandAmount += t.total;
+      lines.push([ev.label, ev.date, t.count, t.total].map(csvField).join(","));
+    });
+    lines.push(["合計","",grandCount,grandAmount].map(csvField).join(","));
+    downloadCSV(lines.join("\n"), "MKQ物販_公演別売上.csv");
+  });
+
+  function csvField(v){
+    v = v==null ? "" : String(v);
+    if(/[",\n]/.test(v)) v = '"' + v.replace(/"/g,'""') + '"';
+    return v;
+  }
+  function downloadCSV(content, filename){
+    var data = "\uFEFF" + content;
+    var blob = new Blob([data], {type:"text/csv;charset=utf-8;"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+
+  // ---------- events tab ----------
+  function renderEvents(){
+    var list = document.getElementById("event-list");
+    if(state.events.length === 0){
+      list.innerHTML = '<p class="note">まだ公演がありません。下のフォームから最初の公演を追加してください。</p>';
+    }else{
+      list.innerHTML = state.events.map(function(ev){
+        var t = eventTotal(ev);
+        var active = ev.id === state.activeEventId;
+        return '' +
+          '<div class="event-card' + (active?' active':'') + '">' +
+            '<div class="info">' +
+              '<div class="name">' + escapeHTML(ev.label) + (active ? '（選択中）' : '') + '</div>' +
+              '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div>' +
+            '</div>' +
+            '<div class="actions">' +
+              (active ? '' : '<button class="btn small" data-act="select" data-event="' + ev.id + '">選択</button>') +
+              '<button class="btn small" data-act="rename" data-event="' + ev.id + '">名称</button>' +
+              '<button class="btn small danger" data-act="delete" data-event="' + ev.id + '">削除</button>' +
+            '</div>' +
+          '</div>';
+      }).join("");
+    }
+  }
+
+  document.getElementById("event-list").addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-act]");
+    if(!btn) return;
+    var id = btn.dataset.event;
+    var act = btn.dataset.act;
+    if(act === "select"){
+      state.activeEventId = id;
+      save();
+      renderEvents(); renderHeader();
+      showTab("tally");
+    }else if(act === "rename"){
+      var ev = getEvent(id);
+      showPrompt("公演名を編集", ev.label, function(name){
+        if(name != null && name.trim() !== ""){
+          ev.label = name.trim();
+          save();
+          renderEvents(); renderHeader();
+        }
+      });
+    }else if(act === "delete"){
+      var ev2 = getEvent(id);
+      showConfirm('「' + ev2.label + '」を削除します。よろしいですか？', function(){
+        state.events = state.events.filter(function(e2){ return e2.id !== id; });
+        if(state.activeEventId === id){
+          state.activeEventId = state.events.length ? state.events[state.events.length-1].id : null;
+        }
+        save();
+        renderEvents(); renderHeader();
+      }, {confirmLabel:"削除"});
+    }
+  });
+
+  document.getElementById("new-event-label").addEventListener("input", function(){
+    document.getElementById("new-event-error").style.display = "none";
+  });
+
+  document.getElementById("new-event-form").addEventListener("submit", function(e){
+    e.preventDefault();
+    var labelInput = document.getElementById("new-event-label");
+    var dateInput = document.getElementById("new-event-date");
+    var carryOver = document.getElementById("carry-over").checked;
+    var label = labelInput.value.trim();
+    var errorEl = document.getElementById("new-event-error");
+    if(!label){
+      errorEl.style.display = "block";
+      labelInput.focus();
+      return;
+    }
+    errorEl.style.display = "none";
+
+    var prevEvent = getActiveEvent() || (state.events.length ? state.events[state.events.length - 1] : null);
+    var sourceItems = prevEvent ? prevEvent.items : DEFAULT_ITEMS;
+    var newItems = cloneItems(sourceItems);
+    var newEvent = { id: uid("e"), label: label, date: dateInput.value || "", items: newItems, stock: {} };
+
+    var afterBySignature = {};
+    if(prevEvent){
+      prevEvent.items.forEach(function(it){
+        afterBySignature[itemSignature(it)] = getStock(prevEvent, it.id).after;
+      });
+    }
+    newItems.forEach(function(it){
+      var carried = carryOver ? afterBySignature[itemSignature(it)] : null;
+      newEvent.stock[it.id] = { before: carried == null ? null : carried, after: null };
+    });
+
+    state.events.push(newEvent);
+    state.activeEventId = newEvent.id;
+    save();
+
+    labelInput.value = "";
+    dateInput.value = "";
+    renderEvents(); renderHeader();
+    showTab("tally");
+  });
+
+  // ---------- items tab (scoped to the active event) ----------
+  function renderItemsTab(){
+    var tbody = document.getElementById("items-tbody");
+    var empty = document.getElementById("items-empty");
+    var addBtn = document.getElementById("add-item");
+    var ev = getActiveEvent();
+    if(!ev){
+      tbody.innerHTML = "";
+      empty.style.display = "block";
+      addBtn.disabled = true;
+      return;
+    }
+    empty.style.display = "none";
+    addBtn.disabled = false;
+
+    var categories = [];
+    ev.items.forEach(function(it){
+      if(it.category && categories.indexOf(it.category) === -1) categories.push(it.category);
+    });
+    document.getElementById("category-options").innerHTML = categories.map(function(c){
+      return '<option value="' + escapeHTML(c) + '">';
+    }).join("");
+
+    tbody.innerHTML = ev.items.map(function(it, idx){
+      return '<tr data-item="' + it.id + '">' +
+        '<td><input type="text" data-field="category" list="category-options" value="' + escapeHTML(it.category) + '"></td>' +
+        '<td><input type="text" data-field="name" value="' + escapeHTML(it.name) + '"></td>' +
+        '<td><input type="text" data-field="color" value="' + escapeHTML(it.color) + '"></td>' +
+        '<td><input type="text" data-field="size" value="' + escapeHTML(it.size) + '"></td>' +
+        '<td class="num"><input type="number" data-field="price" value="' + it.price + '"></td>' +
+        '<td class="row-actions">' +
+          '<button class="btn small" data-act="move-up"' + (idx===0 ? ' disabled' : '') + '>▲</button>' +
+          '<button class="btn small" data-act="move-down"' + (idx===ev.items.length-1 ? ' disabled' : '') + '>▼</button>' +
+        '</td>' +
+        '<td class="row-actions">' +
+          '<button class="btn small" data-act="duplicate-item">複製</button>' +
+          '<button class="btn small danger" data-act="delete-item">削除</button>' +
+        '</td>' +
+      '</tr>';
+    }).join("");
+  }
+
+  document.getElementById("items-tbody").addEventListener("input", function(e){
+    var t = e.target;
+    if(!t.matches("input[data-field]")) return;
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var tr = t.closest("tr");
+    var id = tr.dataset.item;
+    var item = getItemInEvent(ev, id);
+    if(!item) return;
+    var field = t.dataset.field;
+    item[field] = field === "price" ? (Number(t.value) || 0) : t.value;
+    save();
+  });
+
+  document.getElementById("items-tbody").addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-act]");
+    if(!btn || btn.disabled) return;
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var tr = btn.closest("tr");
+    var id = tr.dataset.item;
+    var idx = ev.items.findIndex(function(i){ return i.id === id; });
+    if(idx === -1) return;
+    var act = btn.dataset.act;
+
+    if(act === "delete-item"){
+      var item = ev.items[idx];
+      showConfirm('「' + (itemLabel(item) || item.category) + '」を削除しますか？（選択中の公演のみ）', function(){
+        ev.items = ev.items.filter(function(i){ return i.id !== id; });
+        if(ev.stock) delete ev.stock[id];
+        save();
+        renderItemsTab();
+      }, {confirmLabel:"削除"});
+    }else if(act === "move-up" && idx > 0){
+      ev.items.splice(idx - 1, 0, ev.items.splice(idx, 1)[0]);
+      save();
+      renderItemsTab();
+    }else if(act === "move-down" && idx < ev.items.length - 1){
+      ev.items.splice(idx + 1, 0, ev.items.splice(idx, 1)[0]);
+      save();
+      renderItemsTab();
+    }else if(act === "duplicate-item"){
+      var original = ev.items[idx];
+      var copy = { id: uid("i"), category: original.category, name: original.name, color: original.color, size: original.size, price: original.price };
+      ev.items.splice(idx + 1, 0, copy);
+      if(!ev.stock) ev.stock = {};
+      ev.stock[copy.id] = {before:null, after:null};
+      save();
+      renderItemsTab();
+      var newRow = document.querySelector('tr[data-item="' + copy.id + '"] input[data-field="size"]');
+      if(newRow) newRow.focus();
+    }
+  });
+
+  document.getElementById("add-item").addEventListener("click", function(){
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var newItem = { id: uid("i"), category:"", name:"", color:"", size:"", price:0 };
+    ev.items.push(newItem);
+    if(!ev.stock) ev.stock = {};
+    ev.stock[newItem.id] = {before:null, after:null};
+    save();
+    renderItemsTab();
+  });
+
+  // ---------- init ----------
+  loadStateFromServer().then(function(){
+    if(state.events.length && !state.activeEventId){
+      state.activeEventId = state.events[state.events.length-1].id;
+      save();
+    }
+    renderHeader();
+    var activeBtn = document.querySelector(".tab-btn.active");
+    showTab(activeBtn ? activeBtn.dataset.tab : "events");
+  });
+})();

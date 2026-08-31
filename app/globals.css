@@ -1,0 +1,76 @@
+:root{
+  --bg:#f6f1e7;
+  --bg-alt:#efe7d6;
+  --card:#fffdf9;
+  --card-alt:#f8f2e6;
+  --border:#e2d7bd;
+  --text:#292215;
+  --sub:#8c8170;
+  --accent:#b8402a;
+  --accent-dark:#8f3020;
+  --accent-soft:#f3e0d8;
+  --accent-shadow:rgba(184,64,42,.22);
+  --danger:#a8291f;
+  --danger-soft:#f7e0dd;
+  --on-accent:#fdf6ee;
+  --radius:12px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1c1712;
+    --bg-alt:#241d16;
+    --card:#241d16;
+    --card-alt:#2b231a;
+    --border:#3c3225;
+    --text:#f1e9da;
+    --sub:#a89b85;
+    --accent:#e2764f;
+    --accent-dark:#f0916b;
+    --accent-soft:#3a2a1e;
+    --accent-shadow:rgba(226,118,79,.28);
+    --danger:#e8877c;
+    --danger-soft:#3c211d;
+    --on-accent:#211409;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1c1712;
+  --bg-alt:#241d16;
+  --card:#241d16;
+  --card-alt:#2b231a;
+  --border:#3c3225;
+  --text:#f1e9da;
+  --sub:#a89b85;
+  --accent:#e2764f;
+  --accent-dark:#f0916b;
+  --accent-soft:#3a2a1e;
+  --accent-shadow:rgba(226,118,79,.28);
+  --danger:#e8877c;
+  --danger-soft:#3c211d;
+  --on-accent:#211409;
+}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:"Hiragino Kaku Gothic ProN","Hiragino Sans","Yu Gothic",-apple-system,BlinkMacSystemFont,sans-serif;
+  line-height:1.5;
+}
+
+.login-page{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px;}
+.login-card{width:100%;max-width:360px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:28px 24px;}
+.login-card h1{font-size:19px;margin:0 0 6px;}
+.login-card p{font-size:13px;color:var(--sub);margin:0 0 20px;}
+.login-card form{display:flex;flex-direction:column;gap:12px;}
+.login-card input[type=password]{
+  padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+  background:var(--card);color:var(--text);font-size:15px;
+}
+.login-card button{
+  padding:10px 14px;border:none;border-radius:8px;
+  background:var(--accent);color:var(--on-accent);font-size:14px;font-weight:600;cursor:pointer;
+}
+.login-card button:hover{background:var(--accent-dark);}
+.login-card .error{color:var(--danger);font-size:13px;margin:0;}
