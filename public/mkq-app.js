@@ -439,7 +439,61 @@
         '</details>';
     }).join("");
     updateRegisterTotals();
+    renderRegisterHistory(ev);
   }
+
+  function formatTime(iso){
+    try{
+      var d = new Date(iso);
+      var hh = String(d.getHours()).padStart(2, "0");
+      var mm = String(d.getMinutes()).padStart(2, "0");
+      return hh + ":" + mm;
+    }catch(e){ return ""; }
+  }
+
+  function renderRegisterHistory(ev){
+    var container = document.getElementById("register-history");
+    var log = (ev && ev.registerLog) ? ev.registerLog : [];
+    if(log.length === 0){
+      container.innerHTML = '<p class="note">まだ会計履歴がありません。</p>';
+      return;
+    }
+    var sorted = log.slice().reverse();
+    container.innerHTML = sorted.map(function(entry){
+      var linesHtml = entry.lines.map(function(l){
+        return '<div>' + escapeHTML(l.label) + ' ×' + l.qty + '</div>';
+      }).join("");
+      return '' +
+        '<div class="history-card">' +
+          '<div>' +
+            '<div class="time">' + formatTime(entry.at) + '</div>' +
+            '<div class="lines">' + linesHtml + '</div>' +
+            '<div class="amount">' + formatJPY(entry.total) + '</div>' +
+          '</div>' +
+          '<button type="button" class="btn small danger" data-act="undo-sale" data-entry="' + entry.id + '">取り消す</button>' +
+        '</div>';
+    }).join("");
+  }
+
+  document.getElementById("register-history").addEventListener("click", function(e){
+    var btn = e.target.closest('button[data-act="undo-sale"]');
+    if(!btn) return;
+    var ev = getActiveEvent();
+    if(!ev || !ev.registerLog) return;
+    var entryId = btn.dataset.entry;
+    var entry = ev.registerLog.find(function(x){ return x.id === entryId; });
+    if(!entry) return;
+    showConfirm("この会計（" + formatJPY(entry.total) + "）を取り消しますか？在庫（後の数）が元に戻ります。", function(){
+      entry.lines.forEach(function(l){
+        var stock = getStock(ev, l.itemId);
+        stock.after = (stock.after == null ? 0 : stock.after) + l.qty;
+      });
+      ev.registerLog = ev.registerLog.filter(function(x){ return x.id !== entryId; });
+      save();
+      renderRegisterHistory(ev);
+      renderHeader();
+    }, {confirmLabel:"取り消す"});
+  });
 
   function updateRegisterTotals(){
     var ev = getActiveEvent();
@@ -499,6 +553,7 @@
     var itemIds = Object.keys(registerOrder).filter(function(id){ return registerOrder[id] > 0; });
     if(itemIds.length === 0) return;
     var total = 0, count = 0;
+    var lines = [];
     itemIds.forEach(function(id){
       var qty = registerOrder[id];
       var item = getItemInEvent(ev, id);
@@ -506,14 +561,19 @@
       var stock = getStock(ev, id);
       var currentAfter = stock.after != null ? stock.after : (stock.before != null ? stock.before : 0);
       stock.after = currentAfter - qty;
-      total += qty * (Number(item.price) || 0);
+      var amount = qty * (Number(item.price) || 0);
+      total += amount;
       count += qty;
+      lines.push({ itemId: id, label: itemLabel(item) || item.category, qty: qty, price: item.price, amount: amount });
     });
+    if(!ev.registerLog) ev.registerLog = [];
+    ev.registerLog.push({ id: uid("r"), at: new Date().toISOString(), lines: lines, total: total, count: count });
     save();
     var confirmMsg = document.getElementById("register-confirm");
     confirmMsg.textContent = "会計しました：" + count + "点 ・ " + formatJPY(total);
     confirmMsg.style.display = "block";
     clearRegisterOrder();
+    renderRegisterHistory(ev);
     renderHeader();
   });
 
