@@ -806,6 +806,113 @@
     return order.map(function(sig){ return map[sig]; });
   }
 
+  // シリーズ内の公演を公演日の昇順で並べる（日付未入力は空文字扱いで先頭に）。
+  function eventsForSeriesSortedByDate(seriesId){
+    return state.events
+      .filter(function(ev){ return ev.seriesId === seriesId; })
+      .slice()
+      .sort(function(a, b){ return (a.date || "").localeCompare(b.date || ""); });
+  }
+
+  // シリーズ全体の在庫の動き（開始前→補充→終了時）を品目ごとに集計する。
+  // 補充は専用の入力欄を設けず、「前」の入力だけから自動検出する:
+  // ある公演の「前」が、日付順で直前の公演の「後」より多ければ、
+  // その差分を補充とみなす（現在の公演の後を次の公演の前に引き継ぐ、
+  // という既存の運用と相性がいいように）。
+  function buildSeriesInventory(seriesId){
+    var evs = eventsForSeriesSortedByDate(seriesId);
+    var order = [], map = {};
+    evs.forEach(function(ev){
+      ev.items.forEach(function(it){
+        var sig = itemSignature(it);
+        if(!map[sig]){
+          map[sig] = {
+            category: it.category, name: it.name, color: it.color, size: it.size, price: it.price,
+            startStock: null, endStock: null, restocked: 0, lastAfter: null
+          };
+          order.push(sig);
+        }
+        var row = map[sig];
+        row.price = it.price;
+        var stock = (ev.stock && ev.stock[it.id]) ? ev.stock[it.id] : {before:null, after:null, gifted:0};
+        if(row.startStock === null && stock.before != null){
+          row.startStock = Number(stock.before);
+        }
+        if(row.lastAfter != null && stock.before != null){
+          var diff = Number(stock.before) - row.lastAfter;
+          if(diff > 0) row.restocked += diff;
+        }
+        if(stock.after != null){
+          row.lastAfter = Number(stock.after);
+          row.endStock = Number(stock.after);
+        }
+      });
+    });
+    return order.map(function(sig){
+      var row = map[sig];
+      var sold = 0, gifted = 0;
+      evs.forEach(function(ev){
+        ev.items.forEach(function(it){
+          if(itemSignature(it) !== sig) return;
+          var r = computeItem(ev, it.id);
+          sold += r.sold; gifted += r.gifted;
+        });
+      });
+      var actual = sold + gifted;
+      var hasFullData = row.startStock != null && row.endStock != null;
+      var diff = hasFullData ? (row.startStock + row.restocked - row.endStock - actual) : null;
+      return {
+        category: row.category, name: row.name, color: row.color, size: row.size,
+        startStock: row.startStock, endStock: row.endStock, restocked: row.restocked,
+        actual: actual, diff: diff
+      };
+    });
+  }
+
+  function renderSeriesInventory(seriesId){
+    var wrap = document.getElementById("series-inventory-wrap");
+    var note = document.getElementById("series-inventory-note");
+    if(!seriesId){
+      wrap.style.display = "none";
+      note.style.display = "block";
+      return;
+    }
+    note.style.display = "none";
+    wrap.style.display = "block";
+    var rows = buildSeriesInventory(seriesId);
+    var tbody = document.getElementById("series-inventory-tbody");
+    if(rows.length === 0){
+      tbody.innerHTML = '<tr><td colspan="6" class="note">まだデータがありません。</td></tr>';
+      document.getElementById("series-inventory-grand-start").textContent = "0";
+      document.getElementById("series-inventory-grand-restock").textContent = "0";
+      document.getElementById("series-inventory-grand-end").textContent = "0";
+      document.getElementById("series-inventory-grand-actual").textContent = "0";
+      document.getElementById("series-inventory-grand-diff").textContent = "—";
+      return;
+    }
+    var grandStart = 0, grandRestock = 0, grandEnd = 0, grandActual = 0, grandDiff = 0, hasMissing = false;
+    tbody.innerHTML = rows.map(function(r){
+      grandStart += r.startStock || 0;
+      grandRestock += r.restocked || 0;
+      grandEnd += r.endStock || 0;
+      grandActual += r.actual || 0;
+      if(r.diff == null){ hasMissing = true; } else { grandDiff += r.diff; }
+      var diffText = r.diff == null ? "—" : (r.diff === 0 ? "0" : (r.diff > 0 ? "+" : "") + r.diff);
+      var diffClass = (r.diff != null && r.diff !== 0) ? "num stock-diff-warn" : "num";
+      return '<tr><td>' + escapeHTML((r.category?r.category+" ":"") + itemLabel(r)) + '</td>' +
+        '<td class="num">' + (r.startStock == null ? "—" : r.startStock) + '</td>' +
+        '<td class="num">' + (r.restocked || "") + '</td>' +
+        '<td class="num">' + (r.endStock == null ? "—" : r.endStock) + '</td>' +
+        '<td class="num">' + r.actual + '</td>' +
+        '<td class="' + diffClass + '">' + diffText + '</td></tr>';
+    }).join("");
+    document.getElementById("series-inventory-grand-start").textContent = grandStart;
+    document.getElementById("series-inventory-grand-restock").textContent = grandRestock;
+    document.getElementById("series-inventory-grand-end").textContent = grandEnd;
+    document.getElementById("series-inventory-grand-actual").textContent = grandActual;
+    document.getElementById("series-inventory-grand-diff").textContent = hasMissing ? "—" : (grandDiff === 0 ? "0" : (grandDiff > 0 ? "+" : "") + grandDiff);
+  }
+
   function renderSummary(){
     var seriesId = currentSummaryFilter();
     var tbody = document.getElementById("summary-tbody");
@@ -826,6 +933,8 @@
     document.getElementById("summary-grand-count").textContent = grandCount;
     document.getElementById("summary-grand-gifted").textContent = grandGifted;
     document.getElementById("summary-grand-amount").textContent = formatJPY(grandAmount);
+
+    renderSeriesInventory(seriesId);
 
     var list = document.getElementById("event-summary-list");
     var evs = eventsForSummary(seriesId);
