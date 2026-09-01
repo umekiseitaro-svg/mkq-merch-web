@@ -35,6 +35,69 @@
 
   var state = { events: [], activeEventId: null, series: [] };
 
+  // ---------- オフライン対応: アプリの外側（HTML/JS）はService Workerが、
+  // データ本体はここでのlocalStorage保存が受け持つ。 ----------
+  // mkq-app.jsはnext/scriptのafterInteractiveで読み込まれ、その時点で
+  // ブラウザのloadイベントは既に発火済みのことが多いため、loadイベント
+  // 待ちにはせず、この場ですぐ登録する。
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("/sw.js").catch(function(){});
+  }
+
+  var LOCAL_STATE_KEY = "mkqMerchState_v1";
+
+  function saveLocalState(){
+    try{
+      localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state));
+    }catch(e){
+      // 保存容量超過などは無視（サーバー保存が本体、ローカルはあくまで保険）
+    }
+  }
+
+  function loadLocalState(){
+    try{
+      var raw = localStorage.getItem(LOCAL_STATE_KEY);
+      if(!raw) return null;
+      var parsed = JSON.parse(raw);
+      if(parsed && Array.isArray(parsed.events)) return parsed;
+    }catch(e){}
+    return null;
+  }
+
+  var usingLocalFallback = false;
+  var syncPending = false;
+  var browserOffline = (typeof navigator !== "undefined" && "onLine" in navigator) ? !navigator.onLine : false;
+
+  function updateSyncBadge(){
+    var el = document.getElementById("sync-status");
+    if(!el) return;
+    if(syncPending){
+      el.textContent = "⚠ 未保存の変更があります（通信復旧時に自動保存されます）";
+      el.className = "sync-badge warn";
+      el.style.display = "block";
+    }else if(usingLocalFallback){
+      el.textContent = "オフラインの保存データを表示中です（通信復旧で同期します）";
+      el.className = "sync-badge info";
+      el.style.display = "block";
+    }else if(browserOffline){
+      el.textContent = "オフラインです（操作は続けられ、復旧時に自動保存されます）";
+      el.className = "sync-badge info";
+      el.style.display = "block";
+    }else{
+      el.style.display = "none";
+    }
+  }
+
+  window.addEventListener("online", function(){
+    browserOffline = false;
+    updateSyncBadge();
+    if(syncPending) doSave();
+  });
+  window.addEventListener("offline", function(){
+    browserOffline = true;
+    updateSyncBadge();
+  });
+
   function loadStateFromServer(){
     return fetch("/api/state")
       .then(function(res){
@@ -46,9 +109,19 @@
         if(data && data.state && Array.isArray(data.state.events)){
           state = data.state;
           if(!Array.isArray(state.series)) state.series = [];
+          usingLocalFallback = false;
+          updateSyncBadge();
         }
       })
       .catch(function(){
+        var cached = loadLocalState();
+        if(cached){
+          state = cached;
+          if(!Array.isArray(state.series)) state.series = [];
+          usingLocalFallback = true;
+          updateSyncBadge();
+          return;
+        }
         openModal({
           message: "データの読み込みに失敗しました。通信状況を確認して、ページを再読み込みしてください。",
           showInput: false,
@@ -65,6 +138,7 @@
   var savePending = false;
 
   function save(){
+    saveLocalState();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(doSave, SAVE_DEBOUNCE_MS);
   }
@@ -77,9 +151,15 @@
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({state: state})
     }).then(function(res){
-      if(res.status === 401){ window.location.href = "/login"; }
+      if(res.status === 401){ window.location.href = "/login"; return; }
+      if(!res.ok) throw new Error("save failed: " + res.status);
+      syncPending = false;
+      usingLocalFallback = false;
+      updateSyncBadge();
     }).catch(function(){
-      // 通信エラー: 次の保存タイミングで再試行される
+      // 通信エラー: onlineイベントか次の保存タイミングで再試行される
+      syncPending = true;
+      updateSyncBadge();
     }).then(function(){
       saveInFlight = false;
       if(savePending){ savePending = false; doSave(); }
@@ -1158,6 +1238,7 @@
   });
 
   // ---------- init ----------
+  updateSyncBadge();
   loadStateFromServer().then(function(){
     if(state.events.length && !state.activeEventId){
       state.activeEventId = state.events[state.events.length-1].id;

@@ -26,6 +26,13 @@ const nextConfig: NextConfig = {
         source: "/mkq-app.js",
         headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
       },
+      {
+        // Service Workerの更新をブラウザがすぐ検知できるよう、こちらも
+        // 明示的にキャッシュを無効化する（SWの仕組み自体が別途、
+        // アプリの外側をCache Storageへ保存する役割を担う）。
+        source: "/sw.js",
+        headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
+      },
     ];
   },
 };
