@@ -156,7 +156,7 @@
 
   // ---------- tabs ----------
   var tabButtons = document.querySelectorAll(".tab-btn");
-  var tabPanels = { tally: document.getElementById("tab-tally"), summary: document.getElementById("tab-summary"), events: document.getElementById("tab-events"), items: document.getElementById("tab-items") };
+  var tabPanels = { tally: document.getElementById("tab-tally"), summary: document.getElementById("tab-summary"), events: document.getElementById("tab-events"), items: document.getElementById("tab-items"), register: document.getElementById("tab-register") };
 
   function showTab(name){
     tabButtons.forEach(function(b){ b.classList.toggle("active", b.dataset.tab===name); });
@@ -165,6 +165,7 @@
     if(name==="summary") renderSummary();
     if(name==="events") renderEvents();
     if(name==="items") renderItemsTab();
+    if(name==="register") renderRegister();
   }
   tabButtons.forEach(function(b){ b.addEventListener("click", function(){ showTab(b.dataset.tab); }); });
 
@@ -346,6 +347,129 @@
   function cssEscape(s){
     return String(s).replace(/["\\]/g, "\\$&");
   }
+
+  // ---------- register tab (quick order entry: enter quantity, see live total, checkout applies to stock.after) ----------
+  var registerOrder = {}; // itemId -> qty, this order only (cleared on checkout or leaving the tab)
+
+  function renderRegister(){
+    var ev = getActiveEvent();
+    var container = document.getElementById("register-groups");
+    var empty = document.getElementById("register-empty");
+    var actions = document.getElementById("register-actions");
+    document.getElementById("register-confirm").style.display = "none";
+    registerOrder = {};
+    if(!ev){
+      container.innerHTML = "";
+      empty.style.display = "block";
+      actions.style.display = "none";
+      document.getElementById("register-total").textContent = formatJPY(0);
+      document.getElementById("register-count").textContent = "0点";
+      return;
+    }
+    empty.style.display = "none";
+    actions.style.display = "flex";
+    var groups = groupByCategory(ev.items);
+    container.innerHTML = groups.map(function(g){
+      var rows = g.items.map(function(it){
+        var sub = itemLabel(it);
+        return '' +
+          '<div class="item-card">' +
+            '<div class="item-info">' +
+              '<span class="item-name">' + escapeHTML(sub || it.category) + '</span>' +
+              '<span class="item-price">' + formatJPY(it.price) + '</span>' +
+            '</div>' +
+            '<div class="register-inputs">' +
+              '<button type="button" class="qty-btn" data-act="qty-dec" data-item="' + it.id + '">−</button>' +
+              '<input type="number" inputmode="numeric" min="0" class="qty-input" data-item="' + it.id + '" value="0">' +
+              '<button type="button" class="qty-btn" data-act="qty-inc" data-item="' + it.id + '">＋</button>' +
+              '<span class="register-item-amount" data-reg-amount="' + it.id + '">' + formatJPY(0) + '</span>' +
+            '</div>' +
+          '</div>';
+      }).join("");
+      return '' +
+        '<details class="category" open>' +
+          '<summary><span>' + escapeHTML(g.category) + '</span></summary>' +
+          rows +
+        '</details>';
+    }).join("");
+    updateRegisterTotals();
+  }
+
+  function updateRegisterTotals(){
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var total = 0, count = 0;
+    ev.items.forEach(function(it){
+      var qty = registerOrder[it.id] || 0;
+      total += qty * (Number(it.price) || 0);
+      count += qty;
+    });
+    document.getElementById("register-total").textContent = formatJPY(total);
+    document.getElementById("register-count").textContent = count + "点";
+  }
+
+  function setRegisterQty(itemId, qty){
+    qty = Math.max(0, Math.floor(Number(qty) || 0));
+    if(qty === 0){ delete registerOrder[itemId]; } else { registerOrder[itemId] = qty; }
+    var input = document.querySelector('.qty-input[data-item="' + itemId + '"]');
+    if(input && Number(input.value) !== qty) input.value = qty;
+    var ev = getActiveEvent();
+    var item = ev ? getItemInEvent(ev, itemId) : null;
+    var amountEl = document.querySelector('[data-reg-amount="' + itemId + '"]');
+    if(amountEl && item) amountEl.textContent = formatJPY(qty * (Number(item.price) || 0));
+    updateRegisterTotals();
+  }
+
+  document.getElementById("register-groups").addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-act]");
+    if(!btn) return;
+    var itemId = btn.dataset.item;
+    var current = registerOrder[itemId] || 0;
+    if(btn.dataset.act === "qty-inc") setRegisterQty(itemId, current + 1);
+    if(btn.dataset.act === "qty-dec") setRegisterQty(itemId, current - 1);
+  });
+
+  document.getElementById("register-groups").addEventListener("input", function(e){
+    var t = e.target;
+    if(!t.matches(".qty-input")) return;
+    setRegisterQty(t.dataset.item, t.value);
+  });
+
+  function clearRegisterOrder(){
+    registerOrder = {};
+    document.querySelectorAll(".qty-input").forEach(function(input){ input.value = 0; });
+    document.querySelectorAll("[data-reg-amount]").forEach(function(el){ el.textContent = formatJPY(0); });
+    updateRegisterTotals();
+  }
+
+  document.getElementById("register-clear").addEventListener("click", function(){
+    clearRegisterOrder();
+    document.getElementById("register-confirm").style.display = "none";
+  });
+
+  document.getElementById("register-checkout").addEventListener("click", function(){
+    var ev = getActiveEvent();
+    if(!ev) return;
+    var itemIds = Object.keys(registerOrder).filter(function(id){ return registerOrder[id] > 0; });
+    if(itemIds.length === 0) return;
+    var total = 0, count = 0;
+    itemIds.forEach(function(id){
+      var qty = registerOrder[id];
+      var item = getItemInEvent(ev, id);
+      if(!item) return;
+      var stock = getStock(ev, id);
+      var currentAfter = stock.after != null ? stock.after : (stock.before != null ? stock.before : 0);
+      stock.after = currentAfter - qty;
+      total += qty * (Number(item.price) || 0);
+      count += qty;
+    });
+    save();
+    var confirmMsg = document.getElementById("register-confirm");
+    confirmMsg.textContent = "会計しました：" + count + "点 ・ " + formatJPY(total);
+    confirmMsg.style.display = "block";
+    clearRegisterOrder();
+    renderHeader();
+  });
 
   // ---------- summary tab (aggregate across events by item signature, since each event has its own item list) ----------
   function buildSummary(){
