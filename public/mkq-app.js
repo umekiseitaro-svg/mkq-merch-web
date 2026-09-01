@@ -140,6 +140,42 @@
     return {total:total, count:count, giftedCount:giftedCount};
   }
 
+  // ---------- cash float (おつり) ----------
+  var CASH_DENOMS = [10000,5000,2000,1000,500,100,50,10,5,1];
+  var CASH_DENOM_LABELS = {
+    10000:"1万円", 5000:"5千円", 2000:"2千円", 1000:"千円",
+    500:"500円", 100:"100円", 50:"50円", 10:"10円", 5:"5円", 1:"1円"
+  };
+
+  function getCashFloat(ev){
+    if(!ev) return {before:{}, after:{}};
+    if(!ev.cashFloat) ev.cashFloat = {before:{}, after:{}};
+    if(!ev.cashFloat.before) ev.cashFloat.before = {};
+    if(!ev.cashFloat.after) ev.cashFloat.after = {};
+    return ev.cashFloat;
+  }
+
+  function cashTotal(counts){
+    if(!counts) return 0;
+    var total = 0;
+    CASH_DENOMS.forEach(function(d){
+      var n = Number(counts[d]);
+      if(n) total += n * d;
+    });
+    return total;
+  }
+
+  // 現金過不足 = 公演後のおつり合計 - 公演前のおつり合計 - 売上（レジ・集計タブでの実売上、進呈は除く）。
+  // レジは決済方法（現金／それ以外）を区別していないため、現金以外の決済が混ざっていると
+  // この差額は正確な過不足を示さない点に注意（既知の制約）。
+  function computeCashDiff(ev){
+    var cf = getCashFloat(ev);
+    var beforeTotal = cashTotal(cf.before);
+    var afterTotal = cashTotal(cf.after);
+    var sales = eventTotal(ev).total;
+    return afterTotal - beforeTotal - sales;
+  }
+
   function itemLabel(item){
     var parts = [];
     if(item.name) parts.push(item.name);
@@ -824,6 +860,64 @@
   }
 
   // ---------- events tab ----------
+  function formatCashDiff(diff){
+    if(diff === 0) return "±¥0（過不足なし）";
+    return (diff > 0 ? "+" : "") + formatJPY(diff) + (diff > 0 ? "（過剰）" : "（不足）");
+  }
+
+  function cashFieldsHTML(ev, phase){
+    var cf = getCashFloat(ev);
+    var counts = cf[phase];
+    return CASH_DENOMS.map(function(d){
+      var val = counts[d];
+      return '<div class="field">' +
+        '<label>' + CASH_DENOM_LABELS[d] + '</label>' +
+        '<input type="number" inputmode="numeric" min="0" ' +
+          'data-cash-event="' + ev.id + '" data-cash-phase="' + phase + '" data-cash-denom="' + d + '" ' +
+          'value="' + (val==null ? "" : val) + '">' +
+      '</div>';
+    }).join("");
+  }
+
+  function cashSectionHTML(ev){
+    var diff = computeCashDiff(ev);
+    return '' +
+      '<details class="category cash-details">' +
+        '<summary><span>おつり管理</span><span class="cat-total" data-cash-diff="' + ev.id + '">' + formatCashDiff(diff) + '</span></summary>' +
+        '<div class="item-card">' +
+          '<div class="cash-section-title">公演前</div>' +
+          '<div class="cash-grid">' + cashFieldsHTML(ev, "before") + '</div>' +
+          '<div class="cash-subtotal">前 合計: <span data-cash-subtotal="' + ev.id + ':before">' + formatJPY(cashTotal(getCashFloat(ev).before)) + '</span></div>' +
+        '</div>' +
+        '<div class="item-card">' +
+          '<div class="cash-section-title">公演後</div>' +
+          '<div class="cash-grid">' + cashFieldsHTML(ev, "after") + '</div>' +
+          '<div class="cash-subtotal">後 合計: <span data-cash-subtotal="' + ev.id + ':after">' + formatJPY(cashTotal(getCashFloat(ev).after)) + '</span></div>' +
+        '</div>' +
+        '<div class="item-card cash-diff-card' + (diff !== 0 ? ' cash-diff-warn' : '') + '" data-cash-diff-card="' + ev.id + '">' +
+          '<div class="cash-diff-line">現金過不足（後の合計 − 前の合計 − 売上）</div>' +
+          '<div class="cash-diff-amount" data-cash-diff-detail="' + ev.id + '">' + formatCashDiff(diff) + '</div>' +
+        '</div>' +
+      '</details>';
+  }
+
+  function updateCashDisplays(ev){
+    var cf = getCashFloat(ev);
+    var beforeTotal = cashTotal(cf.before);
+    var afterTotal = cashTotal(cf.after);
+    var diff = computeCashDiff(ev);
+    var beforeEl = document.querySelector('[data-cash-subtotal="' + ev.id + ':before"]');
+    var afterEl = document.querySelector('[data-cash-subtotal="' + ev.id + ':after"]');
+    var diffBadge = document.querySelector('[data-cash-diff="' + ev.id + '"]');
+    var diffDetail = document.querySelector('[data-cash-diff-detail="' + ev.id + '"]');
+    var diffCard = document.querySelector('[data-cash-diff-card="' + ev.id + '"]');
+    if(beforeEl) beforeEl.textContent = formatJPY(beforeTotal);
+    if(afterEl) afterEl.textContent = formatJPY(afterTotal);
+    if(diffBadge) diffBadge.textContent = formatCashDiff(diff);
+    if(diffDetail) diffDetail.textContent = formatCashDiff(diff);
+    if(diffCard) diffCard.classList.toggle("cash-diff-warn", diff !== 0);
+  }
+
   function renderEvents(){
     renderSeriesList();
     refreshSeriesSelects();
@@ -835,20 +929,23 @@
         var t = eventTotal(ev);
         var active = ev.id === state.activeEventId;
         return '' +
-          '<div class="event-card' + (active?' active':'') + '">' +
-            '<div class="info">' +
-              '<div class="name">' + escapeHTML(ev.label) + (active ? '（選択中）' : '') + '</div>' +
-              '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div>' +
-              (ev.seriesId ? '<div><span class="series-tag">' + escapeHTML(seriesName(ev.seriesId)) + '</span></div>' : '') +
-              '<select class="series-assign" data-event="' + ev.id + '">' +
-                '<option value="">（シリーズ未設定）</option>' + seriesOptionsHTML(ev.seriesId || "") +
-              '</select>' +
+          '<div class="event-card has-cash' + (active?' active':'') + '">' +
+            '<div class="event-card-row">' +
+              '<div class="info">' +
+                '<div class="name">' + escapeHTML(ev.label) + (active ? '（選択中）' : '') + '</div>' +
+                '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div>' +
+                (ev.seriesId ? '<div><span class="series-tag">' + escapeHTML(seriesName(ev.seriesId)) + '</span></div>' : '') +
+                '<select class="series-assign" data-event="' + ev.id + '">' +
+                  '<option value="">（シリーズ未設定）</option>' + seriesOptionsHTML(ev.seriesId || "") +
+                '</select>' +
+              '</div>' +
+              '<div class="actions">' +
+                (active ? '' : '<button class="btn small" data-act="select" data-event="' + ev.id + '">選択</button>') +
+                '<button class="btn small" data-act="rename" data-event="' + ev.id + '">名称</button>' +
+                '<button class="btn small danger" data-act="delete" data-event="' + ev.id + '">削除</button>' +
+              '</div>' +
             '</div>' +
-            '<div class="actions">' +
-              (active ? '' : '<button class="btn small" data-act="select" data-event="' + ev.id + '">選択</button>') +
-              '<button class="btn small" data-act="rename" data-event="' + ev.id + '">名称</button>' +
-              '<button class="btn small danger" data-act="delete" data-event="' + ev.id + '">削除</button>' +
-            '</div>' +
+            cashSectionHTML(ev) +
           '</div>';
       }).join("");
     }
@@ -894,6 +991,18 @@
     ev.seriesId = sel.value || null;
     save();
     renderSeriesList();
+  });
+
+  document.getElementById("event-list").addEventListener("input", function(e){
+    var input = e.target.closest("[data-cash-denom]");
+    if(!input) return;
+    var ev = getEvent(input.dataset.cashEvent);
+    if(!ev) return;
+    var cf = getCashFloat(ev);
+    var val = input.value === "" ? null : Math.max(0, parseInt(input.value, 10) || 0);
+    cf[input.dataset.cashPhase][input.dataset.cashDenom] = val;
+    save();
+    updateCashDisplays(ev);
   });
 
   document.getElementById("new-event-label").addEventListener("input", function(){

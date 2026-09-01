@@ -13,6 +13,13 @@ export type Stock = {
   gifted: number;
 };
 
+export type CashCount = Record<string, number>;
+
+export type CashFloat = {
+  before: CashCount;
+  after: CashCount;
+};
+
 export type Event = {
   id: string;
   label: string;
@@ -20,6 +27,7 @@ export type Event = {
   items: Item[];
   stock: Record<string, Stock>;
   seriesId: string | null;
+  cashFloat?: CashFloat;
 };
 
 export type Series = {
