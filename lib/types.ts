@@ -18,11 +18,18 @@ export type Event = {
   date: string;
   items: Item[];
   stock: Record<string, Stock>;
+  seriesId: string | null;
+};
+
+export type Series = {
+  id: string;
+  name: string;
 };
 
 export type AppState = {
   events: Event[];
   activeEventId: string | null;
+  series: Series[];
 };
 
 /** Minimal structural check -- this is server-trusted-input territory
@@ -33,5 +40,6 @@ export function isAppState(value: unknown): value is AppState {
   const v = value as Record<string, unknown>;
   if (!Array.isArray(v.events)) return false;
   if (v.activeEventId !== null && typeof v.activeEventId !== "string") return false;
+  if (v.series !== undefined && !Array.isArray(v.series)) return false;
   return true;
 }

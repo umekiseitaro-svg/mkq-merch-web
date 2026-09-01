@@ -33,7 +33,7 @@
   }
 
 
-  var state = { events: [], activeEventId: null };
+  var state = { events: [], activeEventId: null, series: [] };
 
   function loadStateFromServer(){
     return fetch("/api/state")
@@ -45,6 +45,7 @@
       .then(function(data){
         if(data && data.state && Array.isArray(data.state.events)){
           state = data.state;
+          if(!Array.isArray(state.series)) state.series = [];
         }
       })
       .catch(function(){
@@ -472,9 +473,18 @@
   });
 
   // ---------- summary tab (aggregate across events by item signature, since each event has its own item list) ----------
-  function buildSummary(){
+  function currentSummaryFilter(){
+    var sel = document.getElementById("summary-series-filter");
+    return sel && sel.value ? sel.value : null;
+  }
+
+  function eventsForSummary(seriesId){
+    return seriesId ? state.events.filter(function(ev){ return ev.seriesId === seriesId; }) : state.events;
+  }
+
+  function buildSummary(seriesId){
     var order = [], map = {};
-    state.events.forEach(function(ev){
+    eventsForSummary(seriesId).forEach(function(ev){
       ev.items.forEach(function(it){
         var sig = itemSignature(it);
         var r = computeItem(ev, it.id);
@@ -491,8 +501,9 @@
   }
 
   function renderSummary(){
+    var seriesId = currentSummaryFilter();
     var tbody = document.getElementById("summary-tbody");
-    var rows = buildSummary();
+    var rows = buildSummary(seriesId);
     var grandCount = 0, grandAmount = 0;
     if(rows.length === 0){
       tbody.innerHTML = '<tr><td colspan="4" class="note">まだデータがありません。</td></tr>';
@@ -509,10 +520,11 @@
     document.getElementById("summary-grand-amount").textContent = formatJPY(grandAmount);
 
     var list = document.getElementById("event-summary-list");
-    if(state.events.length === 0){
-      list.innerHTML = '<p class="note">まだ公演がありません。</p>';
+    var evs = eventsForSummary(seriesId);
+    if(evs.length === 0){
+      list.innerHTML = '<p class="note">' + (seriesId ? "このシリーズにはまだ公演がありません。" : "まだ公演がありません。") + '</p>';
     }else{
-      list.innerHTML = state.events.map(function(ev){
+      list.innerHTML = evs.map(function(ev){
         var t = eventTotal(ev);
         return '<div class="event-card"><div class="info"><div class="name">' + escapeHTML(ev.label) + '</div>' +
           '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div></div></div>';
@@ -520,8 +532,11 @@
     }
   }
 
+  document.getElementById("summary-series-filter").addEventListener("change", renderSummary);
+
   document.getElementById("export-summary-csv").addEventListener("click", function(){
-    var rows = buildSummary();
+    var seriesId = currentSummaryFilter();
+    var rows = buildSummary(seriesId);
     var lines = ["カテゴリ,デザイン,カラー,サイズ,単価,合計販売数,合計売上"];
     var grandCount = 0, grandAmount = 0;
     rows.forEach(function(r){
@@ -529,19 +544,22 @@
       lines.push([r.category, r.name, r.color, r.size, r.price, r.count, r.amount].map(csvField).join(","));
     });
     lines.push(["合計","","","","",grandCount,grandAmount].map(csvField).join(","));
-    downloadCSV(lines.join("\n"), "MKQ物販_全体集計.csv");
+    var filenamePart = seriesId ? seriesName(seriesId) : "全体";
+    downloadCSV(lines.join("\n"), "MKQ物販_品目集計_" + filenamePart + ".csv");
   });
 
   document.getElementById("export-events-csv").addEventListener("click", function(){
+    var seriesId = currentSummaryFilter();
     var lines = ["公演名,日付,販売点数,売上"];
     var grandCount = 0, grandAmount = 0;
-    state.events.forEach(function(ev){
+    eventsForSummary(seriesId).forEach(function(ev){
       var t = eventTotal(ev);
       grandCount += t.count; grandAmount += t.total;
       lines.push([ev.label, ev.date, t.count, t.total].map(csvField).join(","));
     });
     lines.push(["合計","",grandCount,grandAmount].map(csvField).join(","));
-    downloadCSV(lines.join("\n"), "MKQ物販_公演別売上.csv");
+    var filenamePart = seriesId ? seriesName(seriesId) : "全体";
+    downloadCSV(lines.join("\n"), "MKQ物販_公演別売上_" + filenamePart + ".csv");
   });
 
   function csvField(v){
@@ -559,8 +577,116 @@
     setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
   }
 
+  // ---------- series (groups of events, e.g. one tour) ----------
+  function getSeriesById(id){
+    if(!id) return null;
+    for(var i=0;i<state.series.length;i++){ if(state.series[i].id === id) return state.series[i]; }
+    return null;
+  }
+  function seriesName(id){
+    var s = getSeriesById(id);
+    return s ? s.name : "";
+  }
+  function seriesEventTotal(seriesId){
+    var total = 0, count = 0;
+    state.events.forEach(function(ev){
+      if(ev.seriesId !== seriesId) return;
+      var t = eventTotal(ev);
+      total += t.total; count += t.count;
+    });
+    return {total:total, count:count};
+  }
+
+  function renderSeriesList(){
+    var list = document.getElementById("series-list");
+    if(state.series.length === 0){
+      list.innerHTML = '<p class="note">まだシリーズがありません。下のフォームから追加してください。</p>';
+    }else{
+      list.innerHTML = state.series.map(function(s){
+        var evCount = state.events.filter(function(ev){ return ev.seriesId === s.id; }).length;
+        var t = seriesEventTotal(s.id);
+        return '' +
+          '<div class="series-card">' +
+            '<div class="info">' +
+              '<div class="name">' + escapeHTML(s.name) + '</div>' +
+              '<div class="meta">' + evCount + '公演 ・ ' + t.count + '点 ・ ' + formatJPY(t.total) + '</div>' +
+            '</div>' +
+            '<div class="actions">' +
+              '<button class="btn small" data-series-act="rename" data-series="' + s.id + '">名称</button>' +
+              '<button class="btn small danger" data-series-act="delete" data-series="' + s.id + '">削除</button>' +
+            '</div>' +
+          '</div>';
+      }).join("");
+    }
+  }
+
+  document.getElementById("series-list").addEventListener("click", function(e){
+    var btn = e.target.closest("button[data-series-act]");
+    if(!btn) return;
+    var id = btn.dataset.series;
+    var act = btn.dataset.seriesAct;
+    var s = getSeriesById(id);
+    if(!s) return;
+    if(act === "rename"){
+      showPrompt("シリーズ名を編集", s.name, function(name){
+        if(name != null && name.trim() !== ""){
+          s.name = name.trim();
+          save();
+          renderSeriesList(); refreshSeriesSelects(); renderEvents();
+        }
+      });
+    }else if(act === "delete"){
+      showConfirm('「' + s.name + '」を削除します。所属する公演のシリーズ指定が解除されます。よろしいですか？', function(){
+        state.series = state.series.filter(function(x){ return x.id !== id; });
+        state.events.forEach(function(ev){ if(ev.seriesId === id) ev.seriesId = null; });
+        save();
+        renderSeriesList(); refreshSeriesSelects(); renderEvents();
+      }, {confirmLabel:"削除"});
+    }
+  });
+
+  document.getElementById("new-series-label").addEventListener("input", function(){
+    document.getElementById("new-series-error").style.display = "none";
+  });
+
+  document.getElementById("new-series-form").addEventListener("submit", function(e){
+    e.preventDefault();
+    var labelInput = document.getElementById("new-series-label");
+    var label = labelInput.value.trim();
+    var errorEl = document.getElementById("new-series-error");
+    if(!label){
+      errorEl.style.display = "block";
+      labelInput.focus();
+      return;
+    }
+    errorEl.style.display = "none";
+    state.series.push({ id: uid("s"), name: label });
+    save();
+    labelInput.value = "";
+    renderSeriesList(); refreshSeriesSelects();
+  });
+
+  function seriesOptionsHTML(selectedId){
+    return state.series.map(function(s){
+      return '<option value="' + s.id + '"' + (s.id === selectedId ? ' selected' : '') + '>' + escapeHTML(s.name) + '</option>';
+    }).join("");
+  }
+
+  function refreshSeriesSelects(){
+    var newEventSelect = document.getElementById("new-event-series");
+    var activeEv = getActiveEvent();
+    var defaultSeriesId = activeEv ? activeEv.seriesId : null;
+    newEventSelect.innerHTML = '<option value="">（シリーズ未設定）</option>' + seriesOptionsHTML(defaultSeriesId || "");
+
+    var filterSelect = document.getElementById("summary-series-filter");
+    var currentFilter = filterSelect.value;
+    filterSelect.innerHTML = '<option value="">すべての公演（シリーズ絞り込みなし）</option>' + seriesOptionsHTML(currentFilter);
+  }
+
   // ---------- events tab ----------
   function renderEvents(){
+    renderSeriesList();
+    refreshSeriesSelects();
     var list = document.getElementById("event-list");
     if(state.events.length === 0){
       list.innerHTML = '<p class="note">まだ公演がありません。下のフォームから最初の公演を追加してください。</p>';
@@ -573,6 +699,10 @@
             '<div class="info">' +
               '<div class="name">' + escapeHTML(ev.label) + (active ? '（選択中）' : '') + '</div>' +
               '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div>' +
+              (ev.seriesId ? '<div><span class="series-tag">' + escapeHTML(seriesName(ev.seriesId)) + '</span></div>' : '') +
+              '<select class="series-assign" data-event="' + ev.id + '">' +
+                '<option value="">（シリーズ未設定）</option>' + seriesOptionsHTML(ev.seriesId || "") +
+              '</select>' +
             '</div>' +
             '<div class="actions">' +
               (active ? '' : '<button class="btn small" data-act="select" data-event="' + ev.id + '">選択</button>') +
@@ -616,6 +746,16 @@
     }
   });
 
+  document.getElementById("event-list").addEventListener("change", function(e){
+    var sel = e.target.closest(".series-assign");
+    if(!sel) return;
+    var ev = getEvent(sel.dataset.event);
+    if(!ev) return;
+    ev.seriesId = sel.value || null;
+    save();
+    renderSeriesList();
+  });
+
   document.getElementById("new-event-label").addEventListener("input", function(){
     document.getElementById("new-event-error").style.display = "none";
   });
@@ -624,6 +764,7 @@
     e.preventDefault();
     var labelInput = document.getElementById("new-event-label");
     var dateInput = document.getElementById("new-event-date");
+    var seriesSelect = document.getElementById("new-event-series");
     var carryOver = document.getElementById("carry-over").checked;
     var label = labelInput.value.trim();
     var errorEl = document.getElementById("new-event-error");
@@ -637,7 +778,7 @@
     var prevEvent = getActiveEvent() || (state.events.length ? state.events[state.events.length - 1] : null);
     var sourceItems = prevEvent ? prevEvent.items : DEFAULT_ITEMS;
     var newItems = cloneItems(sourceItems);
-    var newEvent = { id: uid("e"), label: label, date: dateInput.value || "", items: newItems, stock: {} };
+    var newEvent = { id: uid("e"), label: label, date: dateInput.value || "", items: newItems, stock: {}, seriesId: seriesSelect.value || null };
 
     var afterBySignature = {};
     if(prevEvent){

@@ -3,9 +3,12 @@ import "server-only";
 import { Redis } from "@upstash/redis";
 import type { AppState } from "./types";
 
-const STATE_KEY = "mkqMerch:state";
+// 開発中のローカルテストが本番データを誤って上書きしないよう、キー名を
+// 環境変数で切り替えられるようにしている。.env.localにMKQ_STATE_KEYを
+// 設定するとそちらを使う（本番のVercel環境変数には設定しないこと）。
+const STATE_KEY = process.env.MKQ_STATE_KEY || "mkqMerch:state";
 
-const EMPTY_STATE: AppState = { events: [], activeEventId: null };
+const EMPTY_STATE: AppState = { events: [], activeEventId: null, series: [] };
 
 function getClient(): Redis {
   const url = process.env.UPSTASH_REDIS_REST_URL;
@@ -21,7 +24,9 @@ function getClient(): Redis {
 export async function getState(): Promise<AppState> {
   const redis = getClient();
   const state = await redis.get<AppState>(STATE_KEY);
-  return state ?? EMPTY_STATE;
+  if (!state) return EMPTY_STATE;
+  // 旧データ（seriesフィールド追加前に保存されたもの）を補完する。
+  return { ...state, series: state.series ?? [] };
 }
 
 /** Overwrites the whole shared state. Every viewer's save sends the full
