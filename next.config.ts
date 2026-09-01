@@ -9,6 +9,25 @@ const nextConfig: NextConfig = {
     // much larger tree than intended.
     root: path.join(__dirname),
   },
+  async headers() {
+    // "/" is statically prerendered, and /mkq-app.js is a plain static file --
+    // both are prime targets for a browser (iOS Safari especially, and any
+    // "Add to Home Screen" standalone view) to cache aggressively. If the
+    // page's HTML and the script end up cached from two different deploys,
+    // the script can reference DOM elements the cached HTML doesn't have,
+    // and a click handler fails silently. Force revalidation on every load
+    // so a new deploy is always picked up together, HTML and JS in sync.
+    return [
+      {
+        source: "/",
+        headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
+      },
+      {
+        source: "/mkq-app.js",
+        headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
