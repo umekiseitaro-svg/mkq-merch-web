@@ -532,23 +532,18 @@
     var ev = getActiveEvent();
     var container = document.getElementById("register-groups");
     var empty = document.getElementById("register-empty");
-    var actions = document.getElementById("register-actions");
-    var giftRow = document.getElementById("register-gift-row");
+    closeRegisterCheckout();
     document.getElementById("register-confirm").style.display = "none";
     document.getElementById("register-gift-toggle").checked = false;
     registerOrder = {};
     if(!ev){
       container.innerHTML = "";
       empty.style.display = "block";
-      actions.style.display = "none";
-      giftRow.style.display = "none";
       document.getElementById("register-total").textContent = formatJPY(0);
       document.getElementById("register-count").textContent = "0点";
       return;
     }
     empty.style.display = "none";
-    actions.style.display = "flex";
-    giftRow.style.display = "flex";
     var groups = groupByCategory(ev.items);
     container.innerHTML = groups.map(function(g){
       var rows = g.items.map(function(it){
@@ -647,6 +642,8 @@
     });
     document.getElementById("register-total").textContent = formatJPY(total);
     document.getElementById("register-count").textContent = count + "点";
+    document.getElementById("register-popup-total").textContent = formatJPY(total);
+    document.getElementById("register-popup-count").textContent = count + "点";
   }
 
   function setRegisterQty(itemId, qty){
@@ -684,9 +681,28 @@
     updateRegisterTotals();
   }
 
+  // ---------- レジ: 「今回の注文合計」をタップして開く会計ポップアップ ----------
+  function openRegisterCheckout(){
+    if(!getActiveEvent()) return;
+    document.getElementById("register-checkout-overlay").style.display = "flex";
+  }
+  function closeRegisterCheckout(){
+    document.getElementById("register-checkout-overlay").style.display = "none";
+  }
+
+  document.getElementById("register-total-bar").addEventListener("click", openRegisterCheckout);
+  document.getElementById("register-total-bar").addEventListener("keydown", function(e){
+    if(e.key === "Enter" || e.key === " "){ e.preventDefault(); openRegisterCheckout(); }
+  });
+  document.getElementById("register-checkout-close").addEventListener("click", closeRegisterCheckout);
+  document.getElementById("register-checkout-overlay").addEventListener("click", function(e){
+    if(e.target === document.getElementById("register-checkout-overlay")) closeRegisterCheckout();
+  });
+
   document.getElementById("register-clear").addEventListener("click", function(){
     clearRegisterOrder();
     document.getElementById("register-confirm").style.display = "none";
+    closeRegisterCheckout();
   });
 
   document.getElementById("register-checkout").addEventListener("click", function(){
@@ -721,6 +737,7 @@
       : "会計しました：" + count + "点 ・ " + formatJPY(total);
     confirmMsg.style.display = "block";
     clearRegisterOrder();
+    closeRegisterCheckout();
     renderRegisterHistory(ev);
     renderHeader();
   });
