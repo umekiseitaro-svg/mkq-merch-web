@@ -528,6 +528,34 @@
   // ---------- register tab (quick order entry: enter quantity, see live total, checkout applies to stock.after) ----------
   var registerOrder = {}; // itemId -> qty, this order only (cleared on checkout or leaving the tab)
 
+  // レジ中の在庫表示: 「後」があればそれを、なければ「前」を基準にする
+  // （レジの会計処理自体もこの優先順位でstock.afterを減らしていくため、
+  // 表示と実際の減り方を一致させている）。「進呈」は在庫の減り方に
+  // 関係しないのでここでは考慮しない。
+  function currentStockBase(ev, itemId){
+    var stock = (ev.stock && ev.stock[itemId]) ? ev.stock[itemId] : null;
+    if(!stock) return null;
+    if(stock.after != null) return Number(stock.after);
+    if(stock.before != null) return Number(stock.before);
+    return null;
+  }
+
+  // 今カートに入れている数量を差し引いた「このまま会計した場合に残る在庫」を表示する。
+  function registerStockLabel(ev, itemId){
+    var base = currentStockBase(ev, itemId);
+    if(base == null) return {text:"在庫未設定", negative:false};
+    var remaining = base - (registerOrder[itemId] || 0);
+    return {text:"在庫 " + remaining, negative: remaining < 0};
+  }
+
+  function updateRegisterStockDisplay(ev, itemId){
+    var el = document.querySelector('[data-reg-stock="' + itemId + '"]');
+    if(!el || !ev) return;
+    var label = registerStockLabel(ev, itemId);
+    el.textContent = label.text;
+    el.classList.toggle("negative", label.negative);
+  }
+
   function renderRegister(){
     var ev = getActiveEvent();
     var container = document.getElementById("register-groups");
@@ -548,12 +576,14 @@
     container.innerHTML = groups.map(function(g){
       var rows = g.items.map(function(it){
         var sub = itemLabel(it);
+        var stockLabel = registerStockLabel(ev, it.id);
         return '' +
           '<div class="item-card">' +
             '<div class="item-info">' +
               '<span class="item-name">' + escapeHTML(sub || it.category) + '</span>' +
               '<span class="item-price">' + formatJPY(it.price) + '</span>' +
             '</div>' +
+            '<div class="item-stock' + (stockLabel.negative ? ' negative' : '') + '" data-reg-stock="' + it.id + '">' + stockLabel.text + '</div>' +
             '<div class="register-inputs">' +
               '<button type="button" class="qty-btn" data-act="qty-dec" data-item="' + it.id + '">−</button>' +
               '<input type="number" inputmode="numeric" min="0" class="qty-input" data-item="' + it.id + '" value="0">' +
@@ -655,6 +685,7 @@
     var item = ev ? getItemInEvent(ev, itemId) : null;
     var amountEl = document.querySelector('[data-reg-amount="' + itemId + '"]');
     if(amountEl && item) amountEl.textContent = formatJPY(qty * (Number(item.price) || 0));
+    updateRegisterStockDisplay(ev, itemId);
     updateRegisterTotals();
   }
 
@@ -678,6 +709,10 @@
     document.querySelectorAll(".qty-input").forEach(function(input){ input.value = 0; });
     document.querySelectorAll("[data-reg-amount]").forEach(function(el){ el.textContent = formatJPY(0); });
     document.getElementById("register-gift-toggle").checked = false;
+    var ev = getActiveEvent();
+    document.querySelectorAll("[data-reg-stock]").forEach(function(el){
+      updateRegisterStockDisplay(ev, el.dataset.regStock);
+    });
     updateRegisterTotals();
   }
 
