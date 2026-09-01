@@ -183,7 +183,52 @@
       pill.innerHTML = '<span>' + escapeHTML(ev.label) + (ev.date ? "（" + ev.date + "）" : "") + '</span><span class="arrow">' + formatJPY(t.total) + ' ▸</span>';
     }
   }
-  document.getElementById("event-pill").addEventListener("click", function(){ showTab("events"); });
+  document.getElementById("event-pill").addEventListener("click", openEventSwitcher);
+
+  // ---------- event switcher (quick-switch from the header pill, without leaving the current tab) ----------
+  function openEventSwitcher(){
+    var list = document.getElementById("event-switcher-list");
+    if(state.events.length === 0){
+      list.innerHTML = '<p class="note">まだ公演がありません。「公演管理を開く」から追加してください。</p>';
+    }else{
+      list.innerHTML = state.events.map(function(ev){
+        var t = eventTotal(ev);
+        var active = ev.id === state.activeEventId;
+        return '' +
+          '<div class="event-card' + (active?' active':'') + '" data-switch-event="' + ev.id + '">' +
+            '<div class="info">' +
+              '<div class="name">' + escapeHTML(ev.label) + (active ? '（選択中）' : '') + '</div>' +
+              '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div>' +
+            '</div>' +
+          '</div>';
+      }).join("");
+    }
+    document.getElementById("event-switcher-overlay").style.display = "flex";
+  }
+
+  function closeEventSwitcher(){
+    document.getElementById("event-switcher-overlay").style.display = "none";
+  }
+
+  document.getElementById("event-switcher-list").addEventListener("click", function(e){
+    var card = e.target.closest("[data-switch-event]");
+    if(!card) return;
+    state.activeEventId = card.dataset.switchEvent;
+    save();
+    closeEventSwitcher();
+    renderHeader();
+    var activeBtn = document.querySelector(".tab-btn.active");
+    showTab(activeBtn ? activeBtn.dataset.tab : "tally");
+  });
+
+  document.getElementById("event-switcher-close").addEventListener("click", closeEventSwitcher);
+  document.getElementById("event-switcher-manage").addEventListener("click", function(){
+    closeEventSwitcher();
+    showTab("events");
+  });
+  document.getElementById("event-switcher-overlay").addEventListener("click", function(e){
+    if(e.target === document.getElementById("event-switcher-overlay")) closeEventSwitcher();
+  });
 
   function escapeHTML(s){
     return String(s==null?"":s).replace(/[&<>"']/g, function(c){
