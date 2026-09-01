@@ -10,6 +10,7 @@ export type Item = {
 export type Stock = {
   before: number | null;
   after: number | null;
+  gifted: number;
 };
 
 export type Event = {

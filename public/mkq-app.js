@@ -106,31 +106,38 @@
   }
 
   function getStock(ev, itemId){
-    if(!ev) return {before:null, after:null};
+    if(!ev) return {before:null, after:null, gifted:0};
     if(!ev.stock) ev.stock = {};
-    if(!ev.stock[itemId]) ev.stock[itemId] = {before:null, after:null};
+    if(!ev.stock[itemId]) ev.stock[itemId] = {before:null, after:null, gifted:0};
+    if(ev.stock[itemId].gifted == null) ev.stock[itemId].gifted = 0; // 旧データ（進呈数を持たない）を補う
     return ev.stock[itemId];
   }
 
+  // 在庫の減少（前-後）のうち、進呈数を差し引いた分だけを「販売」として売上に計上する。
+  // 現物の在庫チェック（前-後）自体は進呈があっても変わらない。
+  // getStock()は呼ばない（読むだけのはずの集計処理で、触れていない全品目分の
+  // stockエントリを作ってしまう副作用を避けるため）。
   function computeItem(ev, itemId){
     var item = getItemInEvent(ev, itemId);
-    if(!item) return {sold:0, amount:0};
-    var stock = (ev.stock && ev.stock[itemId]) ? ev.stock[itemId] : {before:null, after:null};
+    if(!item) return {sold:0, amount:0, gifted:0, consumed:0};
+    var stock = (ev.stock && ev.stock[itemId]) ? ev.stock[itemId] : {before:null, after:null, gifted:0};
     var before = stock.before == null ? 0 : Number(stock.before);
     var after = stock.after == null ? 0 : Number(stock.after);
-    var sold = before - after;
-    return {sold: sold, amount: sold * (Number(item.price) || 0)};
+    var gifted = Number(stock.gifted) || 0;
+    var consumed = before - after;
+    var sold = consumed - gifted;
+    return {sold: sold, amount: sold * (Number(item.price) || 0), gifted: gifted, consumed: consumed};
   }
 
   function eventTotal(ev){
-    var total = 0, count = 0;
+    var total = 0, count = 0, giftedCount = 0;
     if(ev){
       ev.items.forEach(function(it){
         var r = computeItem(ev, it.id);
-        total += r.amount; count += r.sold;
+        total += r.amount; count += r.sold; giftedCount += r.gifted;
       });
     }
-    return {total:total, count:count};
+    return {total:total, count:count, giftedCount:giftedCount};
   }
 
   function itemLabel(item){
@@ -328,8 +335,9 @@
             '<div class="item-inputs">' +
               '<div class="field"><label>前</label><input type="number" inputmode="numeric" min="0" data-role="before" data-item="' + it.id + '" value="' + (stock.before==null?"":stock.before) + '"></div>' +
               '<div class="field"><label>後</label><input type="number" inputmode="numeric" min="0" data-role="after" data-item="' + it.id + '" value="' + (stock.after==null?"":stock.after) + '"></div>' +
+              '<div class="field"><label>進呈</label><input type="number" inputmode="numeric" min="0" data-role="gifted" data-item="' + it.id + '" value="' + (stock.gifted?stock.gifted:"") + '"></div>' +
               '<div class="item-result' + (r.sold<0?' negative':'') + '" data-result="' + it.id + '">' +
-                '<div class="sold" data-sold="' + it.id + '">' + r.sold + '点</div>' +
+                '<div class="sold" data-sold="' + it.id + '">' + r.sold + '点' + (r.gifted ? '<span class="gifted-tag">進呈' + r.gifted + '</span>' : '') + '</div>' +
                 '<div class="amount" data-amount="' + it.id + '">' + formatJPY(r.amount) + '</div>' +
               '</div>' +
             '</div>' +
@@ -366,7 +374,7 @@
     var soldEl = document.querySelector('[data-sold="' + itemId + '"]');
     var amtEl = document.querySelector('[data-amount="' + itemId + '"]');
     var resultEl = document.querySelector('[data-result="' + itemId + '"]');
-    if(soldEl) soldEl.textContent = r.sold + "点";
+    if(soldEl) soldEl.innerHTML = r.sold + "点" + (r.gifted ? '<span class="gifted-tag">進呈' + r.gifted + '</span>' : "");
     if(amtEl) amtEl.textContent = formatJPY(r.amount);
     if(resultEl) resultEl.classList.toggle("negative", r.sold < 0);
     updateTotals();
@@ -378,6 +386,13 @@
     var t = eventTotal(ev);
     document.getElementById("tally-total").textContent = formatJPY(t.total);
     document.getElementById("tally-count").textContent = t.count + "点";
+    var giftedNote = document.getElementById("tally-gifted-note");
+    if(t.giftedCount > 0){
+      giftedNote.textContent = "うち進呈: " + t.giftedCount + "点（売上には含まれません）";
+      giftedNote.style.display = "block";
+    }else{
+      giftedNote.style.display = "none";
+    }
     var catTotals = {};
     ev.items.forEach(function(it){
       var cat = it.category || "その他";
@@ -402,18 +417,22 @@
     var container = document.getElementById("register-groups");
     var empty = document.getElementById("register-empty");
     var actions = document.getElementById("register-actions");
+    var giftRow = document.getElementById("register-gift-row");
     document.getElementById("register-confirm").style.display = "none";
+    document.getElementById("register-gift-toggle").checked = false;
     registerOrder = {};
     if(!ev){
       container.innerHTML = "";
       empty.style.display = "block";
       actions.style.display = "none";
+      giftRow.style.display = "none";
       document.getElementById("register-total").textContent = formatJPY(0);
       document.getElementById("register-count").textContent = "0点";
       return;
     }
     empty.style.display = "none";
     actions.style.display = "flex";
+    giftRow.style.display = "flex";
     var groups = groupByCategory(ev.items);
     container.innerHTML = groups.map(function(g){
       var rows = g.items.map(function(it){
@@ -466,9 +485,9 @@
       return '' +
         '<div class="history-card">' +
           '<div>' +
-            '<div class="time">' + formatTime(entry.at) + '</div>' +
+            '<div class="time">' + formatTime(entry.at) + (entry.gifted ? '<span class="gifted-tag">プレゼント</span>' : '') + '</div>' +
             '<div class="lines">' + linesHtml + '</div>' +
-            '<div class="amount">' + formatJPY(entry.total) + '</div>' +
+            '<div class="amount">' + (entry.gifted ? formatJPY(entry.total) + '相当（計上なし）' : formatJPY(entry.total)) + '</div>' +
           '</div>' +
           '<button type="button" class="btn small danger" data-act="undo-sale" data-entry="' + entry.id + '">取り消す</button>' +
         '</div>';
@@ -483,10 +502,16 @@
     var entryId = btn.dataset.entry;
     var entry = ev.registerLog.find(function(x){ return x.id === entryId; });
     if(!entry) return;
-    showConfirm("この会計（" + formatJPY(entry.total) + "）を取り消しますか？在庫（後の数）が元に戻ります。", function(){
+    var msg = entry.gifted
+      ? "このプレゼント（" + formatJPY(entry.total) + "相当）を取り消しますか？在庫（後の数）が元に戻ります。"
+      : "この会計（" + formatJPY(entry.total) + "）を取り消しますか？在庫（後の数）が元に戻ります。";
+    showConfirm(msg, function(){
       entry.lines.forEach(function(l){
         var stock = getStock(ev, l.itemId);
         stock.after = (stock.after == null ? 0 : stock.after) + l.qty;
+        if(entry.gifted){
+          stock.gifted = Math.max(0, (Number(stock.gifted) || 0) - l.qty);
+        }
       });
       ev.registerLog = ev.registerLog.filter(function(x){ return x.id !== entryId; });
       save();
@@ -539,6 +564,7 @@
     registerOrder = {};
     document.querySelectorAll(".qty-input").forEach(function(input){ input.value = 0; });
     document.querySelectorAll("[data-reg-amount]").forEach(function(el){ el.textContent = formatJPY(0); });
+    document.getElementById("register-gift-toggle").checked = false;
     updateRegisterTotals();
   }
 
@@ -552,6 +578,7 @@
     if(!ev) return;
     var itemIds = Object.keys(registerOrder).filter(function(id){ return registerOrder[id] > 0; });
     if(itemIds.length === 0) return;
+    var isGift = document.getElementById("register-gift-toggle").checked;
     var total = 0, count = 0;
     var lines = [];
     itemIds.forEach(function(id){
@@ -561,16 +588,21 @@
       var stock = getStock(ev, id);
       var currentAfter = stock.after != null ? stock.after : (stock.before != null ? stock.before : 0);
       stock.after = currentAfter - qty;
+      if(isGift){
+        stock.gifted = (Number(stock.gifted) || 0) + qty;
+      }
       var amount = qty * (Number(item.price) || 0);
       total += amount;
       count += qty;
       lines.push({ itemId: id, label: itemLabel(item) || item.category, qty: qty, price: item.price, amount: amount });
     });
     if(!ev.registerLog) ev.registerLog = [];
-    ev.registerLog.push({ id: uid("r"), at: new Date().toISOString(), lines: lines, total: total, count: count });
+    ev.registerLog.push({ id: uid("r"), at: new Date().toISOString(), lines: lines, total: total, count: count, gifted: isGift });
     save();
     var confirmMsg = document.getElementById("register-confirm");
-    confirmMsg.textContent = "会計しました：" + count + "点 ・ " + formatJPY(total);
+    confirmMsg.textContent = isGift
+      ? "プレゼントとして記録しました：" + count + "点 ・ " + formatJPY(total) + "相当（売上には計上されません）"
+      : "会計しました：" + count + "点 ・ " + formatJPY(total);
     confirmMsg.style.display = "block";
     clearRegisterOrder();
     renderRegisterHistory(ev);
@@ -594,12 +626,13 @@
         var sig = itemSignature(it);
         var r = computeItem(ev, it.id);
         if(!map[sig]){
-          map[sig] = { category: it.category, name: it.name, color: it.color, size: it.size, price: it.price, count: 0, amount: 0 };
+          map[sig] = { category: it.category, name: it.name, color: it.color, size: it.size, price: it.price, count: 0, amount: 0, giftedCount: 0 };
           order.push(sig);
         }
         map[sig].price = it.price;
         map[sig].count += r.sold;
         map[sig].amount += r.amount;
+        map[sig].giftedCount += r.gifted;
       });
     });
     return order.map(function(sig){ return map[sig]; });
@@ -609,19 +642,21 @@
     var seriesId = currentSummaryFilter();
     var tbody = document.getElementById("summary-tbody");
     var rows = buildSummary(seriesId);
-    var grandCount = 0, grandAmount = 0;
+    var grandCount = 0, grandAmount = 0, grandGifted = 0;
     if(rows.length === 0){
-      tbody.innerHTML = '<tr><td colspan="4" class="note">まだデータがありません。</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="note">まだデータがありません。</td></tr>';
     }else{
       tbody.innerHTML = rows.map(function(r){
-        grandCount += r.count; grandAmount += r.amount;
+        grandCount += r.count; grandAmount += r.amount; grandGifted += r.giftedCount;
         return '<tr><td>' + escapeHTML((r.category?r.category+" ":"") + itemLabel(r)) + '</td>' +
           '<td class="num">' + formatJPY(r.price) + '</td>' +
           '<td class="num">' + r.count + '</td>' +
+          '<td class="num">' + (r.giftedCount || "") + '</td>' +
           '<td class="num">' + formatJPY(r.amount) + '</td></tr>';
       }).join("");
     }
     document.getElementById("summary-grand-count").textContent = grandCount;
+    document.getElementById("summary-grand-gifted").textContent = grandGifted;
     document.getElementById("summary-grand-amount").textContent = formatJPY(grandAmount);
 
     var list = document.getElementById("event-summary-list");
@@ -632,7 +667,7 @@
       list.innerHTML = evs.map(function(ev){
         var t = eventTotal(ev);
         return '<div class="event-card"><div class="info"><div class="name">' + escapeHTML(ev.label) + '</div>' +
-          '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + '</div></div></div>';
+          '<div class="meta">' + (ev.date ? ev.date + " ・ " : "") + t.count + "点 ・ " + formatJPY(t.total) + (t.giftedCount ? " ・ 進呈" + t.giftedCount + "点" : "") + '</div></div></div>';
       }).join("");
     }
   }
@@ -642,27 +677,27 @@
   document.getElementById("export-summary-csv").addEventListener("click", function(){
     var seriesId = currentSummaryFilter();
     var rows = buildSummary(seriesId);
-    var lines = ["カテゴリ,デザイン,カラー,サイズ,単価,合計販売数,合計売上"];
-    var grandCount = 0, grandAmount = 0;
+    var lines = ["カテゴリ,デザイン,カラー,サイズ,単価,合計販売数,進呈数,合計売上"];
+    var grandCount = 0, grandAmount = 0, grandGifted = 0;
     rows.forEach(function(r){
-      grandCount += r.count; grandAmount += r.amount;
-      lines.push([r.category, r.name, r.color, r.size, r.price, r.count, r.amount].map(csvField).join(","));
+      grandCount += r.count; grandAmount += r.amount; grandGifted += r.giftedCount;
+      lines.push([r.category, r.name, r.color, r.size, r.price, r.count, r.giftedCount, r.amount].map(csvField).join(","));
     });
-    lines.push(["合計","","","","",grandCount,grandAmount].map(csvField).join(","));
+    lines.push(["合計","","","","",grandCount,grandGifted,grandAmount].map(csvField).join(","));
     var filenamePart = seriesId ? seriesName(seriesId) : "全体";
     downloadCSV(lines.join("\n"), "MKQ物販_品目集計_" + filenamePart + ".csv");
   });
 
   document.getElementById("export-events-csv").addEventListener("click", function(){
     var seriesId = currentSummaryFilter();
-    var lines = ["公演名,日付,販売点数,売上"];
-    var grandCount = 0, grandAmount = 0;
+    var lines = ["公演名,日付,販売点数,進呈数,売上"];
+    var grandCount = 0, grandAmount = 0, grandGifted = 0;
     eventsForSummary(seriesId).forEach(function(ev){
       var t = eventTotal(ev);
-      grandCount += t.count; grandAmount += t.total;
-      lines.push([ev.label, ev.date, t.count, t.total].map(csvField).join(","));
+      grandCount += t.count; grandAmount += t.total; grandGifted += t.giftedCount;
+      lines.push([ev.label, ev.date, t.count, t.giftedCount, t.total].map(csvField).join(","));
     });
-    lines.push(["合計","",grandCount,grandAmount].map(csvField).join(","));
+    lines.push(["合計","",grandCount,grandGifted,grandAmount].map(csvField).join(","));
     var filenamePart = seriesId ? seriesName(seriesId) : "全体";
     downloadCSV(lines.join("\n"), "MKQ物販_公演別売上_" + filenamePart + ".csv");
   });
