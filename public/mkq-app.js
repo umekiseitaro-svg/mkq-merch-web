@@ -632,7 +632,7 @@
         if(name != null && name.trim() !== ""){
           s.name = name.trim();
           save();
-          renderSeriesList(); refreshSeriesSelects(); renderEvents();
+          renderEvents();
         }
       });
     }else if(act === "delete"){
@@ -640,7 +640,7 @@
         state.series = state.series.filter(function(x){ return x.id !== id; });
         state.events.forEach(function(ev){ if(ev.seriesId === id) ev.seriesId = null; });
         save();
-        renderSeriesList(); refreshSeriesSelects(); renderEvents();
+        renderEvents();
       }, {confirmLabel:"削除"});
     }
   });
@@ -663,7 +663,7 @@
     state.series.push({ id: uid("s"), name: label });
     save();
     labelInput.value = "";
-    renderSeriesList(); refreshSeriesSelects();
+    renderEvents();
   });
 
   function seriesOptionsHTML(selectedId){
