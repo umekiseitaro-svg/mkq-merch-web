@@ -806,6 +806,41 @@
     return order.map(function(sig){ return map[sig]; });
   }
 
+  // 品目別集計テーブルの列見出し用に公演名を短く表示する（日付があれば「8/29」の形、
+  // なければ公演名を短縮）。
+  function shortEventLabel(ev){
+    if(ev.date){
+      var parts = ev.date.split("-");
+      if(parts.length === 3){
+        return parseInt(parts[1], 10) + "/" + parseInt(parts[2], 10);
+      }
+    }
+    return ev.label.length > 6 ? ev.label.slice(0, 6) + "…" : ev.label;
+  }
+
+  // buildSummaryと同じ集計に加えて、公演ごとの販売数（perEvent）も持たせる。
+  // 表示する列（どの公演を列として出すか）は呼び出し側（renderSummary）が
+  // 別途decideする——絞り込みなしのときは列数が際限なく増えるので出さない。
+  function buildSummaryWithEvents(seriesId){
+    var order = [], map = {};
+    eventsForSummary(seriesId).forEach(function(ev){
+      ev.items.forEach(function(it){
+        var sig = itemSignature(it);
+        var r = computeItem(ev, it.id);
+        if(!map[sig]){
+          map[sig] = { category: it.category, name: it.name, color: it.color, size: it.size, price: it.price, count: 0, amount: 0, giftedCount: 0, perEvent: {} };
+          order.push(sig);
+        }
+        map[sig].price = it.price;
+        map[sig].count += r.sold;
+        map[sig].amount += r.amount;
+        map[sig].giftedCount += r.gifted;
+        map[sig].perEvent[ev.id] = (map[sig].perEvent[ev.id] || 0) + r.sold;
+      });
+    });
+    return order.map(function(sig){ return map[sig]; });
+  }
+
   // シリーズ内の公演を公演日の昇順で並べる（日付未入力は空文字扱いで先頭に）。
   function eventsForSeriesSortedByDate(seriesId){
     return state.events
@@ -915,24 +950,45 @@
 
   function renderSummary(){
     var seriesId = currentSummaryFilter();
+    // 列として公演別の内訳を出すのは、シリーズを絞り込んでいるときだけ
+    // （絞り込みなしだと公演数が際限なく増えて列が破綻するため）。
+    var columnEvents = seriesId ? eventsForSeriesSortedByDate(seriesId) : [];
+    var rows = buildSummaryWithEvents(seriesId);
+
+    var thead = document.getElementById("summary-thead");
+    thead.innerHTML = '<tr><th>品目</th><th class="num">単価</th>' +
+      columnEvents.map(function(ev){ return '<th class="num">' + escapeHTML(shortEventLabel(ev)) + '</th>'; }).join("") +
+      '<th class="num">' + (columnEvents.length ? "合計" : "販売数") + '</th>' +
+      '<th class="num">進呈</th><th class="num">売上</th></tr>';
+
     var tbody = document.getElementById("summary-tbody");
-    var rows = buildSummary(seriesId);
     var grandCount = 0, grandAmount = 0, grandGifted = 0;
+    var grandPerEvent = {};
     if(rows.length === 0){
-      tbody.innerHTML = '<tr><td colspan="5" class="note">まだデータがありません。</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="' + (5 + columnEvents.length) + '" class="note">まだデータがありません。</td></tr>';
     }else{
       tbody.innerHTML = rows.map(function(r){
         grandCount += r.count; grandAmount += r.amount; grandGifted += r.giftedCount;
+        var perEventCells = columnEvents.map(function(ev){
+          var c = r.perEvent[ev.id] || 0;
+          grandPerEvent[ev.id] = (grandPerEvent[ev.id] || 0) + c;
+          return '<td class="num">' + (c || "") + '</td>';
+        }).join("");
         return '<tr><td>' + escapeHTML((r.category?r.category+" ":"") + itemLabel(r)) + '</td>' +
           '<td class="num">' + formatJPY(r.price) + '</td>' +
+          perEventCells +
           '<td class="num">' + r.count + '</td>' +
           '<td class="num">' + (r.giftedCount || "") + '</td>' +
           '<td class="num">' + formatJPY(r.amount) + '</td></tr>';
       }).join("");
     }
-    document.getElementById("summary-grand-count").textContent = grandCount;
-    document.getElementById("summary-grand-gifted").textContent = grandGifted;
-    document.getElementById("summary-grand-amount").textContent = formatJPY(grandAmount);
+
+    var tfoot = document.getElementById("summary-tfoot");
+    tfoot.innerHTML = '<tr class="grand-row"><td colspan="2">合計</td>' +
+      columnEvents.map(function(ev){ return '<td class="num">' + (grandPerEvent[ev.id] || 0) + '</td>'; }).join("") +
+      '<td class="num">' + grandCount + '</td>' +
+      '<td class="num">' + grandGifted + '</td>' +
+      '<td class="num">' + formatJPY(grandAmount) + '</td></tr>';
 
     renderSeriesInventory(seriesId);
 
