@@ -24,5 +24,5 @@ export async function proxy(req: NextRequest) {
 
 // Runs on every route except Next.js internals and static files.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|mkq-app.js).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|mkq-app.js|sw.js).*)"],
 };
