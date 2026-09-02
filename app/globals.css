@@ -1,5 +1,5 @@
 :root{
-  --bg:#f6f1e7;
+  --bg:#ffffff;
   --bg-alt:#efe7d6;
   --card:#fffdf9;
   --card-alt:#f8f2e6;
@@ -15,24 +15,8 @@
   --on-accent:#fdf6ee;
   --radius:12px;
 }
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#1c1712;
-    --bg-alt:#241d16;
-    --card:#241d16;
-    --card-alt:#2b231a;
-    --border:#3c3225;
-    --text:#f1e9da;
-    --sub:#a89b85;
-    --accent:#e2764f;
-    --accent-dark:#f0916b;
-    --accent-soft:#3a2a1e;
-    --accent-shadow:rgba(226,118,79,.28);
-    --danger:#e8877c;
-    --danger-soft:#3c211d;
-    --on-accent:#211409;
-  }
-}
+/* 端末のダークモード設定によらず、常に白背景（上のライトテーマ）を使う。
+   手動でダークテーマに切り替える仕組みは今後のために残してある。 */
 :root[data-theme="dark"]{
   --bg:#1c1712;
   --bg-alt:#241d16;
